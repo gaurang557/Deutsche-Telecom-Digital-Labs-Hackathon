@@ -2,8 +2,9 @@
 
 After an executor runs, the dispatcher asks the VerificationRegistry to
 independently re-observe state and confirm the action actually did what was
-intended. Real verifiers (file/spreadsheet/...) arrive with their executors in
-later milestones; the registry + interface are established here.
+intended. `file_verifiers.py` covers the `file.*` actions (M2);
+`spreadsheet_verifiers.py` covers the modifying `spreadsheet.*` action (M4).
+Read-only actions register no verifier (→ SKIPPED).
 """
 
 from .base import Verifier
@@ -17,6 +18,11 @@ from .file_verifiers import (
     FileWriteVerifier,
     register_file_verifiers,
 )
+from .spreadsheet_verifiers import (
+    SPREADSHEET_VERIFIERS,
+    SpreadsheetWriteCellVerifier,
+    register_spreadsheet_verifiers,
+)
 
 __all__ = [
     "Verifier",
@@ -28,4 +34,7 @@ __all__ = [
     "FileMkdirVerifier",
     "FileDeleteVerifier",
     "register_file_verifiers",
+    "SPREADSHEET_VERIFIERS",
+    "SpreadsheetWriteCellVerifier",
+    "register_spreadsheet_verifiers",
 ]

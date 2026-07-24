@@ -8,3 +8,12 @@ pytest-asyncio>=0.23
 # Milestone 3 — read-only PDF executor. PyMuPDF (imported as `fitz`) is the
 # structured PDF API used by `executors/pdf_ops.py` (see ARCHITECTURE §3/§9).
 PyMuPDF>=1.24
+
+# Milestone 4 — spreadsheet executor. openpyxl is the structured .xlsx API used
+# by `executors/spreadsheet_ops.py` (see ARCHITECTURE §3/§9).
+openpyxl>=3.1
+
+# Milestone 6 — document (Word) executor. python-docx (imported as `docx`) is the
+# structured .docx API used by `executors/document_ops.py` (see ARCHITECTURE
+# §3/§9). NOTE: the pip package is `python-docx`; the import name is `docx`.
+python-docx>=1.1
