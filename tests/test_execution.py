@@ -134,3 +134,23 @@ def test_application_launch_error_becomes_action_failure(monkeypatch) -> None:
 
     assert result.status == "failed"
     assert "non-zero exit status" in (result.error or "")
+
+
+def test_open_url_uses_requested_browser(monkeypatch) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr("app.execution.executor.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "app.execution.executor.subprocess.run",
+        lambda command, **_: launched.append(command),
+    )
+    action = make_action(
+        action_type=ActionType.OPEN_URL,
+        target="bing.com",
+        parameters={"browser": "Google Chrome"},
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert result.evidence["url"] == "https://bing.com"
+    assert launched == [["open", "-a", "Google Chrome", "https://bing.com"]]

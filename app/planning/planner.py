@@ -29,6 +29,10 @@ For "open the latest PDF in Downloads", use open_file with target "Downloads"
 and parameters {{"selection": "latest", "extension": ".pdf"}}.
 Never add open_application or focus_application for a file-opening request
 unless the user explicitly names the application they want to use.
+To open a website, use one open_url action with an https URL as target. If the
+user names a browser, put it in parameters as {{"browser": "Google Chrome"}}.
+For "open bing.com in Google Chrome", use target "https://bing.com". Do not add
+separate open_application or focus_application actions for browser navigation.
 Use move_file only when the user explicitly asks to move or relocate a file.
 If required information is missing, do not invent sensitive destinations,
 recipients, filenames, or overwrite intent."""
@@ -48,12 +52,40 @@ class OllamaPlanner:
         return await asyncio.to_thread(self._create_draft_sync, request)
 
     def _create_draft_sync(self, request: TaskRequest) -> DraftPlan:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": request.text},
+        ]
+        content = self._chat(messages)
+
+        try:
+            return DraftPlan.model_validate_json(content)
+        except (ValidationError, ValueError) as first_error:
+            messages.extend(
+                [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "That plan did not match the required schema. "
+                            "Return a corrected plan only. Validation errors: "
+                            f"{first_error}"
+                        ),
+                    },
+                ]
+            )
+            content = self._chat(messages)
+            try:
+                return DraftPlan.model_validate_json(content)
+            except (ValidationError, ValueError) as exc:
+                raise InvalidPlannerResponseError(
+                    "The local model could not produce a valid action plan"
+                ) from exc
+
+    def _chat(self, messages: list[dict[str, str]]) -> str:
         payload = {
             "model": self._model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": request.text},
-            ],
+            "messages": messages,
             "format": DraftPlan.model_json_schema(),
             "stream": False,
             "options": {"temperature": 0},
@@ -72,9 +104,8 @@ class OllamaPlanner:
             raise PlannerUnavailableError("Ollama is unavailable") from exc
 
         try:
-            content = body["message"]["content"]
-            return DraftPlan.model_validate_json(content)
-        except (KeyError, TypeError, ValidationError, ValueError) as exc:
+            return body["message"]["content"]
+        except (KeyError, TypeError) as exc:
             raise InvalidPlannerResponseError(
-                "Ollama returned an invalid action plan"
+                "Ollama returned an incomplete response"
             ) from exc

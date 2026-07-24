@@ -159,3 +159,29 @@ def test_unrequested_viewer_step_is_removed_from_file_open_plan() -> None:
     plan = build_action_plan(request, draft)
 
     assert [action.type for action in plan.actions] == ["open_file"]
+
+
+def test_browser_launch_step_is_removed_from_url_plan() -> None:
+    request = TaskRequest(text="Open bing.com in Google Chrome")
+    draft = DraftPlan(
+        summary="I'll open Bing in Chrome for you.",
+        actions=[
+            DraftAction(
+                step_key="open_browser",
+                type="open_application",
+                target="Google Chrome",
+            ),
+            DraftAction(
+                step_key="open_bing",
+                type="open_url",
+                target="https://bing.com",
+                parameters={"browser": "Google Chrome"},
+                depends_on=["open_browser"],
+            ),
+        ],
+    )
+
+    plan = build_action_plan(request, draft)
+
+    assert [action.type for action in plan.actions] == ["open_url"]
+    assert plan.actions[0].depends_on == []

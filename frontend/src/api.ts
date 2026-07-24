@@ -58,7 +58,12 @@ export async function transcribeAudio(blob: Blob): Promise<TaskRequest> {
     body: form,
   });
   if (!response.ok) {
-    throw new Error(`Transcription failed (HTTP ${response.status})`);
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(
+      body?.detail ?? `Transcription failed (HTTP ${response.status})`,
+    );
   }
   return (await response.json()) as TaskRequest;
 }
@@ -73,7 +78,10 @@ export async function createPlan(
     body: JSON.stringify(request),
   });
   if (!response.ok) {
-    throw new Error(`Planning failed (HTTP ${response.status})`);
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `Planning failed (HTTP ${response.status})`);
   }
   return (await response.json()) as PlanningResponse;
 }

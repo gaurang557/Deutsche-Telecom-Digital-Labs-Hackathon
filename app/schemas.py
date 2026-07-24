@@ -26,6 +26,7 @@ class ControlIntent(StrEnum):
 class ActionType(StrEnum):
     OPEN_APPLICATION = "open_application"
     OPEN_FILE = "open_file"
+    OPEN_URL = "open_url"
     FOCUS_APPLICATION = "focus_application"
     CLICK_ELEMENT = "click_element"
     TYPE_TEXT = "type_text"
@@ -64,7 +65,7 @@ class DraftAction(BaseModel):
     step_key: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     type: ActionType
     target: str = Field(min_length=1, max_length=500)
-    description: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=300)
     parameters: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
     expected_result: dict[str, Any] = Field(default_factory=dict)
