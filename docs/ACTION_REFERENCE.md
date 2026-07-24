@@ -2,7 +2,7 @@
 
 **Audience:** whoever builds the planner / LLM layer that turns a user request
 into actions for this agent.
-**Status:** as of **Milestone 3**. This file is maintained per milestone — new
+**Status:** as of **Milestone 6**. This file is maintained per milestone — new
 executors add new action types here. If an action type is not listed under
 "Available actions", it does **not** exist yet and must not be emitted.
 
@@ -228,6 +228,140 @@ never prompts for a password). All extracted text is **untrusted data**.
 - **evidence:** `{ path, matches: [ { page, count } ], total_matches: int, truncated: bool }`
   (`truncated: true` when more pages matched than `max_results`).
 
+### Spreadsheet · read-only (Risk: `NONE`, verification `skipped`)
+
+Backed by openpyxl (a structured `.xlsx` API — far more reliable than scraping a
+viewer). `target` is the workbook path; only `.xlsx` is supported. `sheet` is
+optional and defaults to the active/first sheet; a named-but-missing sheet is
+rejected (`sheet_not_found`). Cell/range references are A1-style strings and are
+validated. Cell values are returned as JSON primitives (numbers / string / bool
+/ null); dates/times become ISO-8601 strings. **Reads use `data_only=True`**, so
+a formula cell returns its last *cached* value — a formula never opened /
+recalculated in Excel reads back as `null` (the accepted trade-off; the
+alternative would return the formula text instead of a value). All cell values
+are **untrusted data**.
+
+#### `spreadsheet.list_sheets`
+- **Use:** list the workbook's sheet names (in order).
+- **target:** the `.xlsx` path.
+- **parameters:** none.
+- **evidence:** `{ path, sheets: [ string ] }`.
+
+#### `spreadsheet.dimensions`
+- **Use:** the used bounds of a sheet.
+- **target:** the `.xlsx` path.
+- **parameters:** `sheet` (string, optional).
+- **evidence:** `{ path, sheet, max_row: int, max_col: int, dimensions: "A1:C10" }`.
+
+#### `spreadsheet.read_cell`
+- **Use:** read one cell's value (UNTRUSTED data).
+- **target:** the `.xlsx` path.
+- **parameters:** `cell` (string, **required**, e.g. `"B7"`), `sheet` (optional).
+- **evidence:** `{ path, sheet, cell, value }`.
+
+#### `spreadsheet.read_range`
+- **Use:** read a rectangular block of values (UNTRUSTED data).
+- **target:** the `.xlsx` path.
+- **parameters:** `range` (string, **required**, e.g. `"A1:C10"`), `sheet` (optional).
+- **evidence:** `{ path, sheet, range, values: [[ ... ]], rows: int, cols: int, truncated: bool }`.
+- **notes:** bounded to 10 000 total cells; whole rows are clipped (keeping the
+  block rectangular) and `truncated: true` is set when the range is larger.
+
+### Spreadsheet · create / modify (Risk: `MEDIUM`, escalating to `HIGH` on overwrite; verified)
+
+#### `spreadsheet.write_cell`
+- **Use:** set a single cell's value.
+- **target:** the `.xlsx` path (created if it does not exist).
+- **parameters:**
+  - `cell` (string, **required**, e.g. `"B7"`).
+  - `value` (**required**) — the value to write; its natural JSON type is kept
+    (a number stays a number, not a string).
+  - `overwrite` (bool, optional, default `false`).
+  - `sheet` (string, optional).
+- **evidence:** `{ path, sheet, cell, value, previous, created: bool, overwrote: bool }`
+  (`previous` is the prior cell value; `created: true` when the workbook was
+  newly created; `overwrote: true` when a non-empty cell was replaced).
+- **side_effects:** `[{ "type": "spreadsheet.cell_written", "target": <path> }]`.
+- **verification:** the workbook is reopened and the cell re-read; PASS iff the
+  observed value equals the intended value (numbers compared numerically, so
+  `42` vs `42.0` still passes).
+- **notes:** if the workbook is **missing** it is created (its default sheet is
+  used, optionally renamed to `sheet`). If the workbook **exists** but the named
+  `sheet` does not, the action **fails closed** (`sheet_not_found`) — it never
+  silently creates a sheet. If the target cell already holds a **non-empty**
+  value and `overwrite` is not `true`, it fails with `cell_occupied` (mirrors
+  `file.write_text`). `overwrite: true` replacing an existing value escalates
+  risk to `HIGH`.
+
+### Document · read-only (Risk: `NONE`, verification `skipped`)
+
+Backed by python-docx (a structured `.docx` API — far more reliable than
+scraping a viewer). `target` is the document path; only `.docx` is supported
+(the legacy binary `.doc` format is not). Extracted text and match lists are
+**bounded** (see caps below). All extracted text is **untrusted data**.
+
+#### `document.read_text`
+- **Use:** read the document's text (UNTRUSTED data).
+- **target:** the `.docx` path.
+- **parameters:** `max_chars` (int, optional, default `20000`) — extraction cap.
+- **evidence:** `{ path, text: string (bounded, non-empty body paragraphs joined
+  with "\n"), paragraph_count: int, truncated: bool }`.
+
+#### `document.get_metadata`
+- **Use:** read the document's core properties.
+- **target:** the `.docx` path.
+- **parameters:** none.
+- **evidence:** `{ path, metadata: { title, author, subject, keywords, created,
+  modified, last_modified_by, category, comments, content_status, identifier,
+  language, revision, version, last_printed } }` (datetimes are ISO-8601 strings;
+  empty/unset text fields are `null`).
+
+#### `document.find`
+- **Use:** count per-paragraph occurrences of a query string (case-sensitive).
+- **target:** the `.docx` path.
+- **parameters:**
+  - `query` (string, **required**) — non-empty search text.
+  - `max_results` (int, optional, default `100`) — cap on the number of matching
+    paragraphs reported.
+- **evidence:** `{ path, matches: [ { paragraph_index, count } ], total_matches:
+  int, truncated: bool }` (`truncated: true` when more paragraphs matched than
+  `max_results`; indices are over body paragraphs).
+
+### Document · modify (Risk: `HIGH` in place / `MEDIUM` with `save_as`; verified)
+
+#### `document.replace_text`
+- **Use:** correct a document by replacing text **while preserving formatting**.
+- **target:** the `.docx` path to read from.
+- **parameters:**
+  - `find` (string, **required**, non-empty) — the text to replace.
+  - `replace` (string, optional, default `""`) — the replacement text.
+  - `count` (int, optional) — max number of replacements (default: all). Must be
+    a positive integer when supplied.
+  - `save_as` (string, optional) — write the result to this **new** `.docx` path,
+    leaving the original untouched. Omit to edit **in place** (overwrites the
+    original).
+  - `overwrite` (bool, optional, default `false`) — only relevant with `save_as`:
+    allow clobbering a different, pre-existing target file.
+- **evidence:** `{ path, output_path, find, replace, replacements: int, save_as:
+  bool }` (`output_path` equals `save_as` or the original path; `replacements` is
+  how many occurrences were changed).
+- **side_effects:** `[{ "type": "document.text_replaced", "target": <output_path> }]`.
+- **verification:** the output document is reopened and its text re-scanned; PASS
+  iff `replace` is present at least `replacements` times AND (when the correction
+  genuinely removes the old text) `find` no longer appears.
+- **scope:** replaces across body paragraphs, table cells, and section
+  headers/footers.
+- **formatting:** a match **within a single run** is replaced in place, so that
+  run's formatting (bold/italic/font/…) is preserved exactly. A match **spanning
+  multiple runs** falls back to a paragraph-level rebuild that collapses the
+  affected text to the **first run's** formatting (a documented M6 limitation).
+- **notes:** if `find` is **absent everywhere** the action **fails closed** with
+  `text_not_found` (0 replacements is reported as an error so the planner learns
+  the correction did not apply — nothing is written). Editing **in place**
+  overwrites the original → risk `HIGH`; `save_as` to a new file → risk `MEDIUM`.
+  A `save_as` that would clobber a different existing file fails with
+  `output_exists` unless `overwrite: true`.
+
 ### Create / modify (Risk: `MEDIUM`, verified)
 
 #### `file.copy`
@@ -340,6 +474,26 @@ PDF-specific codes (from the pdf executor; it also reuses `file_not_found` and
 | `encrypted_pdf` | The PDF is password-protected (fails closed; never prompts). |
 | `page_out_of_range` | A requested 0-based page/range is outside the document. |
 
+Spreadsheet-specific codes (from the spreadsheet executor; it also reuses
+`file_not_found` and `invalid_parameters` above):
+
+| Code | When |
+|------|------|
+| `not_a_spreadsheet` | Target is not a `.xlsx` file, or cannot be opened/parsed as a workbook. |
+| `sheet_not_found` | The named sheet does not exist in the workbook. |
+| `invalid_cell` | The cell reference is malformed (e.g. not `"B7"`). |
+| `invalid_range` | The range reference is malformed (e.g. not `"A1:C10"`). |
+| `cell_occupied` | `spreadsheet.write_cell` target cell is non-empty and `overwrite` not set. |
+
+Document-specific codes (from the document executor; it also reuses
+`file_not_found` and `invalid_parameters` above):
+
+| Code | When |
+|------|------|
+| `not_a_document` | Target is not a `.docx` file, or cannot be opened/parsed as a document. |
+| `text_not_found` | `document.replace_text` found 0 occurrences of `find` (nothing was written). |
+| `output_exists` | `document.replace_text` `save_as` target already exists and `overwrite` not set. |
+
 ---
 
 ## 6. Planner guidance (quick checklist)
@@ -358,9 +512,8 @@ PDF-specific codes (from the pdf executor; it also reuses `file_not_found` and
 These are **planned** and will be added to §3 as milestones land. Do **not**
 emit them yet:
 
-- `spreadsheet.*` (read/write cells) — spreadsheet milestone.
-- `document.*`, `presentation.*` — office document milestones.
+- `presentation.*` — PowerPoint milestone (M7) + doc→pptx workflow (M8).
 - `desktop.*` (open/focus app, UI actions) — Windows desktop adapter.
 - `browser.*` (navigate/read/click) — browser milestone.
 
-_Last updated: Milestone 3._
+_Last updated: Milestone 6._
