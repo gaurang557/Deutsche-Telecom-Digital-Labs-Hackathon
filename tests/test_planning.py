@@ -6,8 +6,8 @@ from pydantic import ValidationError
 
 from app.api.routes import get_planner
 from app.main import app
-from app.planning.normalizer import build_action_plan
-from app.schemas import DraftAction, DraftPlan, TaskRequest
+from app.planning.normalizer import build_action_plan, classify_risk
+from app.schemas import ActionType, DraftAction, DraftPlan, TaskRequest
 
 
 class FakePlanner:
@@ -185,3 +185,8 @@ def test_browser_launch_step_is_removed_from_url_plan() -> None:
 
     assert [action.type for action in plan.actions] == ["open_url"]
     assert plan.actions[0].depends_on == []
+
+
+def test_closing_applications_is_high_risk() -> None:
+    assert classify_risk(ActionType.CLOSE_APPLICATION) == "high"
+    assert classify_risk(ActionType.CLOSE_ALL_APPLICATIONS) == "high"

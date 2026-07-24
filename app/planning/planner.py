@@ -33,6 +33,13 @@ To open a website, use one open_url action with an https URL as target. If the
 user names a browser, put it in parameters as {{"browser": "Google Chrome"}}.
 For "open bing.com in Google Chrome", use target "https://bing.com". Do not add
 separate open_application or focus_application actions for browser navigation.
+For "close Calculator", use close_application with target "Calculator". For
+"close all apps", use one close_all_applications action with target "macOS".
+For "show the contents of notes.txt", use read_file. For "copy the contents of
+source.txt to destination.txt", use copy_file_content with source as target and
+parameters {{"destination": "destination.txt", "overwrite": false}}.
+For "summarize the email open in Gmail", use one summarize_gmail_email action
+with target "Google Chrome". This reads only the currently visible Gmail page.
 Use move_file only when the user explicitly asks to move or relocate a file.
 If required information is missing, do not invent sensitive destinations,
 recipients, filenames, or overwrite intent."""

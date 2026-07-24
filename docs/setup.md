@@ -258,6 +258,29 @@ Grant Files and Folders access to the exact terminal or editor process running
 Uvicorn, quit it completely, reopen it, and restart FastAPI. Previously
 submitted plans are single-use; record the request again after restarting.
 
+### Gmail summarization on macOS
+
+Voice desk can summarize the email currently open in Gmail in Google Chrome.
+The feature reads the visible Gmail page and sends that text only to the local
+Ollama model.
+
+1. Open Gmail in Google Chrome and select the email to summarize.
+2. In Chrome, enable **View → Developer → Allow JavaScript from Apple
+   Events**.
+3. Grant Automation permission if macOS asks whether the terminal may control
+   Google Chrome.
+4. Ask: `Summarize the email currently open in Gmail.`
+
+The email is treated as untrusted content. Instructions written inside an
+email cannot authorize desktop actions.
+
+### Closing all applications on macOS
+
+`Close all apps` requires plan approval because applications may contain
+unsaved work. Voice desk preserves Finder and the terminal or editor hosting
+the backend so it can finish the execution request. Other visible applications
+are asked to quit and may still display their normal save confirmation.
+
 ### Desktop input does not occur
 
 - On macOS, confirm Accessibility permission for the Uvicorn host application.

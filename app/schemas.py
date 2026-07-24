@@ -28,10 +28,13 @@ class ActionType(StrEnum):
     OPEN_FILE = "open_file"
     OPEN_URL = "open_url"
     FOCUS_APPLICATION = "focus_application"
+    CLOSE_APPLICATION = "close_application"
+    CLOSE_ALL_APPLICATIONS = "close_all_applications"
     CLICK_ELEMENT = "click_element"
     TYPE_TEXT = "type_text"
     PRESS_KEY = "press_key"
     READ_FILE = "read_file"
+    COPY_FILE_CONTENT = "copy_file_content"
     CREATE_FILE = "create_file"
     MOVE_FILE = "move_file"
     OVERWRITE_FILE = "overwrite_file"
@@ -39,6 +42,7 @@ class ActionType(StrEnum):
     SEND_MESSAGE = "send_message"
     SUBMIT_FORM = "submit_form"
     PUBLISH_CONTENT = "publish_content"
+    SUMMARIZE_GMAIL_EMAIL = "summarize_gmail_email"
 
 
 class RiskLevel(StrEnum):
@@ -132,11 +136,18 @@ class ActionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class VerificationResult(BaseModel):
+    passed: bool | None = None
+    message: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
 class ActionResult(BaseModel):
     action_id: UUID
     status: ActionStatus
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    verification: VerificationResult | None = None
 
 
 class ExecutePlanRequest(BaseModel):
@@ -146,6 +157,9 @@ class ExecutePlanRequest(BaseModel):
 
 
 class ExecutionStatus(StrEnum):
+    PLANNED = "planned"
+    RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
@@ -156,3 +170,29 @@ class PlanExecutionResponse(BaseModel):
     plan_id: UUID
     status: ExecutionStatus
     results: list[ActionResult]
+
+
+class PlanControlRequest(BaseModel):
+    intent: Literal["pause", "resume", "cancel"]
+
+
+class TaskSummary(BaseModel):
+    plan_id: UUID
+    request_id: UUID
+    request_text: str
+    summary: str
+    status: ExecutionStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskEvent(BaseModel):
+    event_type: str
+    message: str
+    created_at: datetime
+
+
+class TaskDetail(TaskSummary):
+    plan: ActionPlan
+    results: list[ActionResult] = Field(default_factory=list)
+    events: list[TaskEvent] = Field(default_factory=list)

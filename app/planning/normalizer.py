@@ -10,17 +10,21 @@ from app.schemas import (
 )
 
 _HIGH_RISK_ACTIONS = {
+    ActionType.CLOSE_APPLICATION,
+    ActionType.CLOSE_ALL_APPLICATIONS,
     ActionType.DELETE_FILE,
     ActionType.SEND_MESSAGE,
     ActionType.SUBMIT_FORM,
     ActionType.PUBLISH_CONTENT,
 }
 _MEDIUM_RISK_ACTIONS = {
+    ActionType.COPY_FILE_CONTENT,
     ActionType.CREATE_FILE,
     ActionType.MOVE_FILE,
     ActionType.OVERWRITE_FILE,
 }
 _CONFIRMATION_ACTIONS = _HIGH_RISK_ACTIONS | {
+    ActionType.COPY_FILE_CONTENT,
     ActionType.MOVE_FILE,
     ActionType.OVERWRITE_FILE,
 }
@@ -30,10 +34,13 @@ _ACTION_VERBS = {
     ActionType.OPEN_FILE: "Find and open",
     ActionType.OPEN_URL: "Open",
     ActionType.FOCUS_APPLICATION: "Bring into focus",
+    ActionType.CLOSE_APPLICATION: "Close",
+    ActionType.CLOSE_ALL_APPLICATIONS: "Close all open applications on",
     ActionType.CLICK_ELEMENT: "Select",
     ActionType.TYPE_TEXT: "Enter text in",
     ActionType.PRESS_KEY: "Use a keyboard shortcut in",
     ActionType.READ_FILE: "Read",
+    ActionType.COPY_FILE_CONTENT: "Copy the contents of",
     ActionType.CREATE_FILE: "Create",
     ActionType.MOVE_FILE: "Move",
     ActionType.OVERWRITE_FILE: "Update",
@@ -41,6 +48,7 @@ _ACTION_VERBS = {
     ActionType.SEND_MESSAGE: "Send a message to",
     ActionType.SUBMIT_FORM: "Submit",
     ActionType.PUBLISH_CONTENT: "Publish",
+    ActionType.SUMMARIZE_GMAIL_EMAIL: "Summarize the open email in",
 }
 
 
@@ -60,6 +68,9 @@ def describe_action(
     if action_type is ActionType.OPEN_URL:
         browser = parameters.get("browser", "your default browser")
         return f"Open {target} in {browser}."
+    if action_type is ActionType.COPY_FILE_CONTENT:
+        destination = parameters.get("destination", "the destination file")
+        return f"Copy the contents of {target} to {destination}."
     verb = _ACTION_VERBS[action_type]
     return f"{verb} {target}."
 

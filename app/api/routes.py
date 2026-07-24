@@ -17,9 +17,12 @@ from app.planning.service import PlanningService
 from app.schemas import (
     ExecutePlanRequest,
     HealthResponse,
+    PlanControlRequest,
     PlanExecutionResponse,
     PlanningResponse,
+    TaskDetail,
     TaskRequest,
+    TaskSummary,
 )
 
 router = APIRouter()
@@ -102,4 +105,56 @@ async def execute_plan(
             status_code=status.HTTP_409_CONFLICT,
             detail="This plan has already been submitted for execution",
         )
-    return await executor.execute_plan(plan, request.approved_action_ids)
+    response = await executor.execute_plan(
+        plan,
+        request.approved_action_ids,
+        control_state=lambda: repository.status(plan_id),
+    )
+    repository.complete(response)
+    return response
+
+
+@router.post(
+    "/plans/{plan_id}/control",
+    response_model=TaskDetail,
+    tags=["execution"],
+)
+async def control_plan(
+    plan_id: UUID,
+    request: PlanControlRequest,
+    repository: Annotated[PlanRepository, Depends(get_plan_repository)],
+) -> TaskDetail:
+    try:
+        next_status = repository.control(plan_id, request.intent)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if next_status is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    detail = repository.detail(plan_id)
+    assert detail is not None
+    return detail
+
+
+@router.get("/tasks", response_model=list[TaskSummary], tags=["tasks"])
+async def list_tasks(
+    repository: Annotated[PlanRepository, Depends(get_plan_repository)],
+) -> list[TaskSummary]:
+    return repository.list()
+
+
+@router.get(
+    "/tasks/{plan_id}",
+    response_model=TaskDetail,
+    tags=["tasks"],
+)
+async def get_task(
+    plan_id: UUID,
+    repository: Annotated[PlanRepository, Depends(get_plan_repository)],
+) -> TaskDetail:
+    detail = repository.detail(plan_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return detail
