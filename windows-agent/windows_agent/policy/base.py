@@ -21,3 +21,17 @@ class Policy(abc.ABC):
     def authorize(self, action: Action, context: Any = None) -> PolicyDecision:
         """Return the deterministic authorization verdict for `action`."""
         raise NotImplementedError
+
+    def validate_confirmation(self, token: str, action: Action) -> bool:
+        """Return True iff `token` is a valid single-use confirmation for THIS
+        exact `action`.
+
+        A CONFIRM decision from `authorize` is only honoured by the dispatcher
+        when a valid confirmation token is presented on a later re-dispatch. The
+        deterministic engine (see `policy/deterministic.py`) overrides this to
+        check a single-use, TTL-bounded, action-bound token. The default here is
+        the safe one — no policy grants a confirmation implicitly — so mocks and
+        any future policy without a confirmation store fail closed (a CONFIRM
+        decision keeps requesting confirmation rather than ever auto-proceeding).
+        """
+        return False
