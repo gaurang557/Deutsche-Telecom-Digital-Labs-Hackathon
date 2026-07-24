@@ -8,8 +8,10 @@ FULL PIPELINE (Milestone 1)
       → action registry        (unknown type → FAILED, fails closed)
       → policy gateway         (obey a deterministic PolicyDecision)
             DENY    → DENIED,             executor NOT called
-            CONFIRM → NEEDS_CONFIRMATION, executor NOT called
             CLARIFY → CLARIFY,            executor NOT called
+            CONFIRM → NEEDS_CONFIRMATION, executor NOT called…
+                      …UNLESS a valid single-use confirmation token bound to
+                      THIS exact action is supplied, in which case → proceed
             ALLOW   → proceed
       → required-verifier guard (missing → FAILED, executor NOT called)
       → executor               (execute_authorized_action)
@@ -93,7 +95,21 @@ class Dispatcher:
         self._audit = audit or NullAuditSink()
 
     # ── public entry point ─────────────────────────────────────────────────
-    async def dispatch(self, action: Action | Mapping[str, Any], context: ExecutionContext | None = None) -> ActionResult:
+    async def dispatch(
+        self,
+        action: Action | Mapping[str, Any],
+        context: ExecutionContext | None = None,
+        *,
+        confirmation_token: str | None = None,
+    ) -> ActionResult:
+        """Run one Action through the safe pipeline.
+
+        ``confirmation_token`` is the anti-injection gate for CONFIRM decisions:
+        a HIGH/CONSEQUENTIAL action executes only when a valid, single-use token
+        bound to THIS exact action is supplied (see policy/confirmation.py).
+        Omitting it (the default) preserves the original behaviour, so the ALLOW
+        path and all existing callers are unaffected.
+        """
         context = context or ExecutionContext()
 
         # 1) Schema validation (planner may hand us a dict).
@@ -136,9 +152,9 @@ class Dispatcher:
 
         # 4) Policy gateway — obey the deterministic decision.
         decision: PolicyDecision = self._policy.authorize(action, context)
-        gated = self._apply_policy(action, decision)
+        gated = self._apply_policy(action, decision, confirmation_token)
         if gated is not None:
-            return gated  # DENY / CONFIRM / CLARIFY short-circuit here
+            return gated  # DENY / CLARIFY / unconfirmed CONFIRM short-circuit here
 
         # 5) Required-verifier guard (after policy, before any side effect).
         if registration.requires_verification and not self._verification.has_verifier(action.type):
@@ -174,20 +190,53 @@ class Dispatcher:
         return self.build_action_result(action, exec_result, verification)
 
     # ── stage helpers ──────────────────────────────────────────────────────
-    def _apply_policy(self, action: Action, decision: PolicyDecision) -> ActionResult | None:
-        """Return a short-circuit ActionResult for non-ALLOW outcomes, else None."""
+    def _apply_policy(
+        self,
+        action: Action,
+        decision: PolicyDecision,
+        confirmation_token: str | None = None,
+    ) -> ActionResult | None:
+        """Return a short-circuit ActionResult for non-proceeding outcomes, else None.
+
+        ALLOW proceeds. CONFIRM proceeds ONLY when a valid single-use token bound
+        to THIS exact action is supplied (the anti-injection gate); otherwise it
+        short-circuits to NEEDS_CONFIRMATION, presenting the freshly-minted token
+        and reason. DENY and CLARIFY always short-circuit (executor never runs).
+        """
         if decision.outcome is PolicyOutcome.DENY:
             self._emit(AuditEventType.POLICY_DENIED, action, outcome="denied",
                        summary=decision.reason, details={"rule_id": decision.rule_id})
             return self._simple_result(action, ActionStatus.DENIED, ErrorCode.POLICY_DENIED, decision.reason)
 
         if decision.outcome is PolicyOutcome.CONFIRM:
+            # The executor MUST NOT run until a valid confirmation is presented.
+            # A confirmation approved for action X can never authorize a mutated
+            # action X' — validation re-derives the action hash and checks the
+            # single-use, unexpired token bound to it (policy/confirmation.py).
+            if confirmation_token is not None and self._policy.validate_confirmation(confirmation_token, action):
+                self._emit(AuditEventType.CONFIRMATION_ACCEPTED, action, outcome="confirmed",
+                           summary=f"confirmation accepted; proceeding with {action.type}",
+                           details={"rule_id": decision.rule_id, "action_hash": decision.action_hash})
+                return None  # valid single-use token → fall through and execute
+
+            if confirmation_token is not None:
+                # A token was presented but did not validate (reused, expired, or
+                # bound to a different/modified action). Reject it, then re-request.
+                self._emit(AuditEventType.CONFIRMATION_REJECTED, action, outcome="rejected",
+                           summary="confirmation token invalid, expired, or bound to a different action",
+                           details={"rule_id": decision.rule_id, "action_hash": decision.action_hash})
+
             self._emit(AuditEventType.POLICY_CONFIRMATION_REQUIRED, action, outcome="confirm",
                        summary=decision.reason,
                        details={"rule_id": decision.rule_id, "action_hash": decision.action_hash})
             return self._simple_result(
                 action, ActionStatus.NEEDS_CONFIRMATION, ErrorCode.CONFIRMATION_REQUIRED, decision.reason,
-                evidence={"confirmation_token": decision.confirmation_token, "action_hash": decision.action_hash},
+                evidence={
+                    "confirmation_token": decision.confirmation_token,
+                    "action_hash": decision.action_hash,
+                    "rule_id": decision.rule_id,
+                    "risk_level": decision.risk_level.value,
+                },
             )
 
         if decision.outcome is PolicyOutcome.CLARIFY:
