@@ -13,11 +13,17 @@ import json
 import pytest
 
 from app.config import Settings
-from app.planning.capabilities import detect_mutation_intent, plan_omits_required_mutation
+from app.planning.capabilities import (
+    detect_mutation_intent,
+    find_invalid_reference_group,
+    find_positional_search_text,
+    plan_omits_required_mutation,
+)
 from app.planning.exceptions import InvalidPlannerResponseError
 from app.planning.plan_repair import (
     RecoverablePlanError,
     correct_action_families,
+    find_advisory_problems,
     find_recoverable_problems,
 )
 from app.planning.planner import (
@@ -332,6 +338,211 @@ def test_an_uncorrectable_mismatch_is_sent_back_to_the_planner() -> None:
 
 def test_a_recoverable_plan_error_is_a_value_error_so_the_existing_loop_repairs_it() -> None:
     assert issubclass(RecoverablePlanError, ValueError)
+
+
+# ── a $ref must be able to produce the group it asks for ─────────────────────
+def _ref(regex: str, group: object = 1) -> dict:
+    return {"$ref": "earlier.evidence.text", "regex": regex, "group": group}
+
+
+def test_a_regex_without_the_requested_group_is_reported() -> None:
+    """The live 500: no parentheses, asking for group 1."""
+    problem = find_invalid_reference_group({"value": _ref(r"Revenue:\s*[0-9.]+")})
+
+    assert problem is not None
+    assert "capture group" in problem
+
+
+def test_a_group_beyond_the_defined_ones_is_reported() -> None:
+    problem = find_invalid_reference_group({"value": _ref(r"(\d+)-(\d+)", 3)})
+
+    assert problem is not None
+    assert "capture group" in problem
+
+
+def test_an_uncompilable_regex_is_reported() -> None:
+    problem = find_invalid_reference_group({"value": _ref(r"(unclosed")})
+
+    assert problem is not None
+    assert "not a valid pattern" in problem
+
+
+def test_an_unknown_named_group_is_reported() -> None:
+    problem = find_invalid_reference_group({"value": _ref(r"(?P<here>\d+)", "elsewhere")})
+
+    assert problem is not None
+    assert "no group named" in problem
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        _ref(r"Revenue:\s*([0-9.]+)"),  # the canonical shape
+        _ref(r"(\d+)-(\d+)", 2),  # a later group that does exist
+        _ref(r"Revenue:\s*[0-9.]+", 0),  # group 0 is the whole match, always valid
+        _ref(r"(?P<value>\d+)", "value"),  # a named group that does exist
+        {"$ref": "earlier.evidence.text"},  # no regex at all
+    ],
+)
+def test_a_usable_reference_is_not_reported(reference: dict) -> None:
+    assert find_invalid_reference_group({"value": reference}) is None
+
+
+def test_parameters_without_any_reference_are_not_reported() -> None:
+    assert find_invalid_reference_group({"cell": "B2", "value": 27.4}) is None
+    assert find_invalid_reference_group({}) is None
+
+
+def test_a_reference_nested_in_a_list_is_still_checked() -> None:
+    problem = find_invalid_reference_group({"values": [{"inner": _ref(r"no groups")}]})
+
+    assert problem is not None
+    assert "capture group" in problem
+
+
+# ── a replace step must search for content, not for a position ───────────────
+@pytest.mark.parametrize(
+    "find",
+    ["slide 3", "Slide 3", "  slide  3  ", "the slide 3", "page 2", "slide #4", "row 7"],
+)
+def test_a_bare_positional_reference_is_not_accepted_as_search_text(find: str) -> None:
+    problem = find_positional_search_text("presentation.replace_text", {"find": find})
+
+    assert problem is not None
+    assert "where to look" in problem
+
+
+@pytest.mark.parametrize(
+    "find",
+    [
+        "old wording",
+        "slide 3 of the annual review",
+        "Revenue for slide 3 was 12",
+        "Recommendation: expand the northern region",
+        "slide three",
+        "3",
+    ],
+)
+def test_real_wording_is_left_alone_even_when_it_mentions_a_position(find: str) -> None:
+    assert find_positional_search_text("presentation.replace_text", {"find": find}) is None
+
+
+def test_the_positional_check_only_looks_at_replace_actions() -> None:
+    # A read step's parameters are none of this check's business.
+    assert find_positional_search_text("presentation.read_text", {"find": "slide 3"}) is None
+    assert find_positional_search_text("spreadsheet.write_cell", {"find": "slide 3"}) is None
+
+
+def test_a_find_bound_to_an_earlier_step_is_not_mistaken_for_a_position() -> None:
+    # A $ref is a dict, not a string, so there is nothing to pattern-match.
+    reference = {
+        "$ref": "read_slide.evidence.text",
+        "regex": r"(.+)",
+        "group": 1,
+        "coerce": "string",
+    }
+    assert (
+        find_positional_search_text("presentation.replace_text", {"find": reference}) is None
+    )
+
+
+def test_a_positional_find_is_reported_as_an_advisory_not_a_rejection() -> None:
+    """CONTRACT CHANGED DELIBERATELY: this no longer stops the plan.
+
+    Rejecting it and asking for a repair was the original behaviour and it made a
+    live run strictly worse: the local model cannot supply the alternative (the
+    deck's placeholder token, unknowable without reading the deck first), so every
+    attempt burned budget and the task ended as an opaque "could not produce a
+    valid action plan" instead of running at all.
+
+    Allowed through, the plan executes and fails at the replace step with
+    `Text not found in presentation: 'slide 3'`, which says exactly what is wrong.
+    Nothing unsafe is permitted by this: a replace that matches nothing writes
+    nothing, and the mutation-completeness check still requires the write step to
+    be PRESENT, so the silent-success defect stays fixed.
+    """
+    draft = DraftPlan.model_validate(
+        _plan(
+            _READ_DOC,
+            _action(
+                "edit_it",
+                "presentation.replace_text",
+                "Desktop/deck.pptx",
+                find="slide 3",
+                replace="the recommendation",
+            ),
+        )
+    )
+    request = "read the recommendation from notes.docx and update slide 3 of deck.pptx"
+
+    # Not a recoverable problem, so the repair loop is never entered...
+    assert find_recoverable_problems(draft, request) == []
+    # ...but it is still recorded, so the operator can see it in the console.
+    advisories = find_advisory_problems(draft)
+    assert len(advisories) == 1
+    assert "where to look" in advisories[0]
+
+
+def test_a_positional_find_now_plans_on_the_first_attempt() -> None:
+    positional = json.dumps(
+        _plan(
+            _READ_DOC,
+            _action(
+                "edit_it",
+                "presentation.replace_text",
+                "Desktop/deck.pptx",
+                find="slide 3",
+                replace="the recommendation",
+            ),
+        )
+    )
+    planner = _ScriptedPlanner([positional])
+
+    draft = planner._create_draft_sync(
+        TaskRequest(text="read the recommendation from notes.docx and update slide 3 of deck.pptx")
+    )
+
+    # One model round-trip, and the plan still contains the write step.
+    assert len(planner.prompts) == 1
+    assert draft.actions[-1].parameters["find"] == "slide 3"
+    assert any(action_mutates(action.type) for action in draft.actions)
+
+
+def test_a_legitimate_replace_plan_is_accepted_untouched() -> None:
+    good = json.dumps(_plan(_READ_DOC, _REPLACE_SLIDE))
+    planner = _ScriptedPlanner([good])
+
+    draft = planner._create_draft_sync(
+        TaskRequest(text="read the recommendation from notes.docx and update slide 3 of deck.pptx")
+    )
+
+    assert draft.actions[-1].parameters["find"] == "old wording"
+    assert len(planner.prompts) == 1
+
+
+def test_a_read_only_plan_still_fails_closed_even_with_a_positional_find() -> None:
+    """The check that actually protects the user is untouched by the downgrade.
+
+    A positional `find` is now tolerated, but a plan of pure READS for a request
+    that asked for a change is still rejected and still fails closed. That is the
+    check that prevents the silent-success defect, and it must not have been
+    loosened by making the search-text check advisory.
+    """
+    read_only = json.dumps(
+        _plan(
+            _READ_DOC,
+            _action("look", "presentation.read_text", "Desktop/deck.pptx", slide=3),
+        )
+    )
+    planner = _ScriptedPlanner([read_only] * (MAX_PLANNING_ATTEMPTS + 2))
+
+    with pytest.raises(InvalidPlannerResponseError):
+        planner._create_draft_sync(
+            TaskRequest(text="update slide 3 of deck.pptx from notes.docx")
+        )
+
+    assert len(planner.prompts) <= MAX_PLANNING_ATTEMPTS
+    assert len(planner.prompts) <= MAX_SEMANTIC_REPAIR_ATTEMPTS + 1
 
 
 def test_the_repair_message_stays_bounded() -> None:

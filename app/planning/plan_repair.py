@@ -35,10 +35,15 @@ from pydantic import ValidationError
 from app.planning.capabilities import (
     find_extension_family_mismatch,
     find_fabricated_user_profile_path,
+    find_invalid_reference_group,
+    find_invalid_slide_number,
+    find_non_string_path_parameter,
+    find_null_required_parameter,
+    find_positional_search_text,
     plan_omits_required_mutation,
 )
 from app.schemas import DraftPlan
-from app.structured_actions import canonical_family_correction
+from app.structured_actions import PATH_LIKE_PARAMETERS, canonical_family_correction
 
 
 class RecoverablePlanError(ValueError):
@@ -116,7 +121,7 @@ def find_recoverable_problems(draft: DraftPlan, request_text: str) -> list[str]:
         candidates = [action.target]
         candidates.extend(
             value
-            for key in ("destination", "save_as")
+            for key in sorted(PATH_LIKE_PARAMETERS)
             if isinstance(value := action.parameters.get(key), str)
         )
         for candidate in candidates:
@@ -129,5 +134,48 @@ def find_recoverable_problems(draft: DraftPlan, request_text: str) -> list[str]:
         mismatch = find_extension_family_mismatch(action.type, action.target, action.parameters)
         if mismatch is not None:
             problems.append(f"{action.step_key}: {mismatch}")
+        bad_slide = find_invalid_slide_number(action.parameters)
+        if bad_slide is not None:
+            problems.append(f"{action.step_key}: {bad_slide}")
+        null_required = find_null_required_parameter(action.type, action.parameters)
+        if null_required is not None:
+            problems.append(f"{action.step_key}: {null_required}")
+        bad_path_param = find_non_string_path_parameter(action.parameters)
+        if bad_path_param is not None:
+            problems.append(f"{action.step_key}: {bad_path_param}")
+        bad_group = find_invalid_reference_group(action.parameters)
+        if bad_group is not None:
+            problems.append(f"{action.step_key}: {bad_group}")
 
     return list(dict.fromkeys(problems))
+
+
+def find_advisory_problems(draft: DraftPlan) -> list[str]:
+    """Problems worth recording that must NOT stop the plan.
+
+    WHY THIS CATEGORY EXISTS
+    ------------------------
+    A search string that names a position ("slide 3") instead of wording is
+    certainly wrong, and rejecting it looked right. In practice it made things
+    worse: the local 3B model cannot reliably produce the alternative — the deck's
+    real placeholder token, which it cannot know without reading the deck first —
+    so every attempt burned repair budget and the task ended as an opaque "could
+    not produce a valid action plan" instead of running.
+
+    Letting it through costs nothing and explains more. `replace_text` that finds
+    no match is a NO-OP: it changes no file, so there is no dangerous outcome to
+    prevent, and the failure arrives as `Text not found in presentation: 'slide 3'`
+    — which says precisely what went wrong, after the read steps have visibly
+    succeeded.
+
+    This is a reporting change only. It removes no safety property: the
+    mutation-completeness check still requires the plan to CONTAIN a write step, so
+    the silent-success defect stays fixed, and nothing here grants an action,
+    relaxes confirmation, or alters risk.
+    """
+    advisories: list[str] = []
+    for action in draft.actions:
+        positional = find_positional_search_text(action.type, action.parameters)
+        if positional is not None:
+            advisories.append(f"{action.step_key}: {positional}")
+    return list(dict.fromkeys(advisories))

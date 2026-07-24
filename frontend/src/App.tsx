@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { Fragment, FormEvent, useCallback, useEffect, useState } from "react";
 import {
   createPlan,
   controlPlan,
@@ -7,6 +7,7 @@ import {
   listTasks,
   type PlanExecutionResponse,
   type PlanningResponse,
+  type StepDetail,
   type TaskStatus,
   type TaskSummary,
   type TaskRequest,
@@ -64,6 +65,92 @@ function evidenceText(
 ): string | null {
   const value = evidence[key];
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+/**
+ * The data a step actually produced, collapsed by default.
+ *
+ * A run used to show only a status, which hid the whole point of the workflow:
+ * a value came out of one file and went into another. This makes that chain
+ * readable while keeping the plan scannable.
+ *
+ * Everything here arrives already clamped and redacted by the server. The
+ * excerpt is rendered as a quotation because it is content read from a file,
+ * not something the agent said.
+ */
+function StepDetailView({ detail }: { detail: StepDetail }) {
+  // Normalised rather than destructured straight through, so a step whose detail
+  // the server could not build degrades to nothing instead of throwing.
+  const summary = detail.summary ?? "";
+  const facts = detail.facts ?? [];
+  const excerpt = detail.excerpt ?? null;
+  const comparison = detail.comparison ?? null;
+  const note = detail.note ?? null;
+  const hasBody = facts.length > 0 || excerpt !== null || comparison !== null;
+  if (!hasBody && !summary && !note) return null;
+
+  return (
+    <div className="step-detail">
+      {summary && <p className="step-detail__summary">{summary}</p>}
+      {note && (
+        <p className="step-detail__note">
+          <span aria-hidden="true">i</span>
+          {note}
+        </p>
+      )}
+      {hasBody && (
+        <details className="step-detail__more">
+          <summary>What this step produced</summary>
+          {facts.length > 0 && (
+            <dl className="step-detail__facts">
+              {facts.map((fact) => (
+                <Fragment key={`${fact.label}-${fact.value}`}>
+                  <dt>{fact.label}</dt>
+                  <dd>{fact.value}</dd>
+                </Fragment>
+              ))}
+            </dl>
+          )}
+          {comparison && (
+            <div className="step-detail__check">
+              <span>
+                Checked by reopening the file
+                {comparison.method ? ` (${comparison.method})` : ""}
+              </span>
+              <dl>
+                {comparison.expected != null && (
+                  <>
+                    <dt>Expected</dt>
+                    <dd>{comparison.expected}</dd>
+                  </>
+                )}
+                {comparison.observed != null && (
+                  <>
+                    <dt>Found on disk</dt>
+                    <dd>{comparison.observed}</dd>
+                  </>
+                )}
+              </dl>
+            </div>
+          )}
+          {excerpt && (
+            <figure className="step-detail__excerpt">
+              <figcaption>
+                {excerpt.label}
+                {excerpt.untrusted && (
+                  <em> — content from the file, not the assistant</em>
+                )}
+              </figcaption>
+              <blockquote>{excerpt.body}</blockquote>
+              {excerpt.truncated && (
+                <small>Shortened for display — this is not the whole file.</small>
+              )}
+            </figure>
+          )}
+        </details>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -613,6 +700,9 @@ export default function App() {
                             </span>
                             {action.verification.message}
                           </div>
+                        )}
+                        {action.detail && (
+                          <StepDetailView detail={action.detail} />
                         )}
                         {evidenceText(action.evidence, "summary") && (
                           <div className="evidence-panel evidence-panel--summary">

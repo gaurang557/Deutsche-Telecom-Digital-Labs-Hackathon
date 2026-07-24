@@ -15,6 +15,7 @@ from app.planning.planner import OllamaPlanner, Planner
 from app.planning.repository import PlanRepository
 from app.planning.service import PlanningService
 from app.schemas import (
+    ActionPlan,
     ActionResult,
     ActionStatus,
     ExecutePlanRequest,
@@ -30,6 +31,28 @@ from app.schemas import (
 
 router = APIRouter()
 router.include_router(voice_router)
+
+
+def _with_step_details(
+    response: PlanExecutionResponse,
+    plan: ActionPlan,
+) -> PlanExecutionResponse:
+    """Attach the bounded, display-only view of each step's evidence.
+
+    Called AFTER the run has been persisted, deliberately. The stored record is
+    written without these fields, so making evidence legible on screen does not
+    enlarge what is kept on disk.
+
+    The step type comes from the plan because a result carries only its id.
+    `build_step_detail` never raises, so a surprising evidence shape degrades to
+    the previous status-only display rather than failing the response.
+    """
+    from app.step_detail import build_step_detail
+
+    types = {action.action_id: str(action.type) for action in plan.actions}
+    for result in response.results:
+        result.detail = build_step_detail(types.get(result.action_id, ""), result)
+    return response
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
@@ -158,7 +181,7 @@ async def execute_plan(
             control_state=lambda: repository.status(plan_id),
         )
     repository.complete(response)
-    return response
+    return _with_step_details(response, plan)
 
 
 @router.post(

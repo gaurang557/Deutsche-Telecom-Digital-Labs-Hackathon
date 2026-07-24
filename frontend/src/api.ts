@@ -37,6 +37,37 @@ export interface PlanningResponse {
   refusal: string | null;
 }
 
+/**
+ * A bounded sample of content a step read out of a file.
+ *
+ * `untrusted` is always true: an excerpt is text found in a document, never
+ * something the agent said. It must be rendered as quoted material, because a
+ * file can contain instructions aimed at the agent and those must not look like
+ * agent output on screen.
+ */
+export interface StepExcerpt {
+  label: string;
+  body: string;
+  truncated: boolean;
+  untrusted: boolean;
+}
+
+/** What a modifying step intended, against what was seen after reopening it. */
+export interface StepComparison {
+  method: string | null;
+  expected: string | null;
+  observed: string | null;
+}
+
+/** Display-only detail derived server-side from evidence. Already clamped. */
+export interface StepDetail {
+  summary: string;
+  facts: { label: string; value: string }[];
+  excerpt: StepExcerpt | null;
+  comparison: StepComparison | null;
+  note: string | null;
+}
+
 export interface ActionResult {
   action_id: string;
   status: "succeeded" | "failed" | "blocked" | "cancelled";
@@ -47,6 +78,7 @@ export interface ActionResult {
     message: string;
     evidence: Record<string, unknown>;
   } | null;
+  detail?: StepDetail | null;
 }
 
 export type TaskStatus =

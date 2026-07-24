@@ -8,7 +8,13 @@ from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any
 
-from app.schemas import ActionType, RiskLevel, StructuredActionType
+from app.schemas import (
+    STRUCTURED_PARAMETER_KEYS,
+    STRUCTURED_REQUIRED_PARAMETER_KEYS,
+    ActionType,
+    RiskLevel,
+    StructuredActionType,
+)
 
 STRUCTURED_ACTION_TYPES = frozenset(action.value for action in StructuredActionType)
 
@@ -45,6 +51,35 @@ UNTRUSTED_CONTENT_ACTIONS = frozenset(
     }
 )
 PERMANENTLY_DENIED_ACTIONS = frozenset({StructuredActionType.FILE_DELETE.value})
+
+#: Actions that BRING THEIR TARGET INTO EXISTENCE. For these the target is a
+#: destination, not a subject: a path that does not exist yet is the normal,
+#: intended case, so it must be taken literally and never resolved onto some
+#: same-named file elsewhere. `spreadsheet.write_cell` belongs here even though it
+#: often edits an existing workbook, because it CREATES one when the target is
+#: missing (see its executor docstring) — and a create that got redirected into an
+#: existing workbook would modify a file the user never named.
+CREATES_ITS_TARGET_ACTIONS = frozenset(
+    {
+        StructuredActionType.SPREADSHEET_WRITE_CELL.value,
+        StructuredActionType.FILE_WRITE_TEXT.value,
+        StructuredActionType.FILE_MKDIR.value,
+    }
+)
+
+#: Actions whose target must ALREADY EXIST for the action to mean anything: every
+#: read, plus the in-place edits (`document.replace_text`,
+#: `presentation.replace_text`) and the copy/move sources. Only these may have a
+#: target resolved onto a file that is really there.
+#:
+#: Derived by subtraction rather than listed, so it cannot drift from
+#: `MODIFYING_STRUCTURED_ACTIONS`: a newly added action type is covered
+#: automatically, and the only thing anyone has to declare is whether an action
+#: creates its own target. Permanently denied actions are excluded because nothing
+#: should help them locate a file.
+REQUIRES_EXISTING_TARGET_ACTIONS = (
+    STRUCTURED_ACTION_TYPES - CREATES_ITS_TARGET_ACTIONS - PERMANENTLY_DENIED_ACTIONS
+)
 
 MAC_ONLY_LEGACY_ACTIONS = frozenset(
     {
@@ -100,10 +135,18 @@ Parameters, exactly these names and no others:
 - spreadsheet.write_cell: cell, value, overwrite, optional sheet. This is also how
   a new workbook is created: point it at an .xlsx path that does not exist yet and
   the workbook is created with that one sheet and cell.
-- document.read_text / presentation.read_text: optional max_chars.
+- document.read_text: optional max_chars. presentation.read_text: optional
+  max_chars and slide, counted from 1 just as you say it, so slide 3 is
+  {"slide": 3}.
 - document.replace_text / presentation.replace_text: find, replace, save_as,
   overwrite. Use save_as for a new output file unless the user explicitly asked
   to overwrite in place. Both need an existing .docx or .pptx to start from.
+  find must be wording that is really in the file, never "slide 3" or "page 2",
+  which say WHERE to look. A template file marks the spot to fill in with a
+  placeholder token — an ALL-CAPS word such as SOME_PLACEHOLDER, or a {{MARKER}} —
+  so for "update slide N of a template", find is that token and replace is the
+  text you read from the other file. If you do not know the token, omit save_as
+  and use the most likely placeholder wording rather than a position.
 - file.exists: none. file.read_text: encoding, max_bytes.
   file.write_text: content, overwrite. file.copy / file.move: destination,
   overwrite. file.mkdir: parents, exist_ok.
@@ -154,6 +197,92 @@ def action_identity_hash(action_type: str, target: str | None, parameters: dict[
         default=str,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: Optional parameters whose value is a PATH. An empty or whitespace-only string
+#: is not a path, so for these it says the same thing as omitting the key. Kept
+#: narrow on purpose: for a non-path parameter an empty string can be a real
+#: value (`content: ""` writes an empty file), so blankness is not read as
+#: absence anywhere else.
+PATH_LIKE_PARAMETERS = frozenset({"destination", "save_as"})
+
+
+def _structured_type(action_type: str) -> StructuredActionType | None:
+    try:
+        return StructuredActionType(action_type)
+    except ValueError:
+        return None
+
+
+def required_parameters_for(action_type: str) -> frozenset[str]:
+    """The parameters an action cannot run without."""
+    structured = _structured_type(action_type)
+    if structured is None:
+        return frozenset()
+    return STRUCTURED_REQUIRED_PARAMETER_KEYS.get(structured, frozenset())
+
+
+def optional_parameters_for(action_type: str) -> frozenset[str]:
+    """The parameters an action accepts but does not require.
+
+    Derived by subtraction from the two canonical registries in `app.schemas`
+    rather than listed again here, so it cannot drift from either. A legacy
+    (non-structured) action yields nothing, which leaves its parameters untouched.
+    """
+    structured = _structured_type(action_type)
+    if structured is None:
+        return frozenset()
+    accepted = STRUCTURED_PARAMETER_KEYS.get(structured, frozenset())
+    return accepted - STRUCTURED_REQUIRED_PARAMETER_KEYS.get(structured, frozenset())
+
+
+def strip_absent_optional_parameters(
+    action_type: str,
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """Drop OPTIONAL parameters the planner filled in as "not using this".
+
+    A model asked for a JSON object routinely writes `"save_as": null` for an
+    optional field it does not want. Omitting the key is what that means, and the
+    executors already treat an absent `save_as` as "edit in place", so dropping it
+    is what makes the plan runnable rather than a reinterpretation of it.
+
+    Strictly omission, never coercion. Nothing is retyped: no string becomes a
+    bool or a number, and a value that is present and of the wrong type still
+    fails loudly instead of being guessed at.
+
+    A REQUIRED parameter is never dropped, however absent its value looks. A null
+    `find` is a broken plan rather than an unused option, and silently removing it
+    would turn a clear failure into a confusing one.
+    """
+    optional = optional_parameters_for(action_type)
+    path_like = optional & PATH_LIKE_PARAMETERS
+    stripped: dict[str, Any] = {}
+    for key, value in parameters.items():
+        if key in optional:
+            if value is None:
+                continue
+            if key in path_like and is_absent_path_value(value):
+                continue
+        stripped[key] = value
+    return stripped
+
+
+def is_absent_path_value(value: Any) -> bool:
+    """Whether a value in a PATH parameter says "no path" rather than naming one.
+
+    A path is a string. A blank string is not a file name, and `False` is not a
+    file name either — a model writing `save_as: false` is saying it is not using
+    the option, in the same breath as the one writing `null`.
+
+    This stays omission rather than coercion because it is confined to parameters
+    whose only legal value is a path: nothing is retyped, and no OTHER parameter
+    treats `False` as absent. `overwrite: false` in particular is a real, meaningful
+    value and is never touched — the golden workflow-1 plan depends on that.
+    """
+    if value is False:
+        return True
+    return isinstance(value, str) and not value.strip()
 
 
 def structured_risk(action_type: str, parameters: dict[str, Any]) -> RiskLevel:

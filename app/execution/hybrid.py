@@ -28,8 +28,12 @@ from app.schemas import (
     PlanExecutionResponse,
     VerificationResult,
 )
+from app.step_detail import excerpt_for_diagnosis, pattern_for_diagnosis
 from app.structured_actions import (
+    CREATES_ITS_TARGET_ACTIONS,
+    PATH_LIKE_PARAMETERS,
     READ_ONLY_STRUCTURED_ACTIONS,
+    REQUIRES_EXISTING_TARGET_ACTIONS,
     STRUCTURED_ACTION_TYPES,
     UNTRUSTED_CONTENT_ACTIONS,
 )
@@ -261,22 +265,44 @@ class HybridExecutor:
         prior_by_key: dict[str, ActionResult],
         approved_action_hashes: dict[UUID, str],
     ) -> ActionResult:
-        requested_target: str | None = None
+        # Normally already set during plan build, where the substitution happened
+        # before policy and confirmation saw the action.
+        requested_target: str | None = action.resolved_from
         try:
             parameters = _resolve_references(action.parameters, prior_by_key)
+            # After reference resolution, so a position carried in from an earlier
+            # step is converted too, and before the executor ever sees it.
+            parameters = _to_executor_indexes(parameters)
             target = _resolve_local_path(action.target)
             parameters = _resolve_path_parameters(parameters)
-            # Only a read may be pointed at a file it did not name exactly. A
-            # write or a create keeps the destination the plan actually gave.
-            if target is not None and str(action.type) in READ_ONLY_STRUCTURED_ACTIONS:
+            # A target resolved at plan build already exists, so discovery here
+            # short-circuits on that. This remains as a backstop for a plan that
+            # did not go through normalisation, and stays limited to reads: a
+            # modifying action must never be retargeted after the user has
+            # confirmed it, because the confirmation is bound to the old target.
+            if (
+                target is not None
+                and requested_target is None
+                and str(action.type) in READ_ONLY_STRUCTURED_ACTIONS
+            ):
                 discovered = _discover_readable_file(target)
                 if discovered is not None:
                     requested_target, target = target, discovered
-        except (KeyError, TypeError, ValueError) as exc:
+        except Exception as exc:
+            # Broad ON PURPOSE, and scoped to parameter resolution only — the
+            # dispatch below is not inside this block. Everything here works on
+            # untrusted model output (reference paths, regexes, group indexes,
+            # path strings), and an escaping exception became an HTTP 500 with a
+            # traceback: a live IndexError from `match.group` on a group-less
+            # regex did exactly that. A failed action carrying a bounded message
+            # is the correct outcome for bad plan data, so this is the same
+            # principle already applied to unexpected verifier exceptions.
+            # BaseException (KeyboardInterrupt, SystemExit) is deliberately not
+            # caught. Nothing here decides permission, risk, or verification.
             return ActionResult(
                 action_id=action.action_id,
                 status=ActionStatus.FAILED,
-                error=f"Structured action validation failed: {exc}",
+                error=f"Structured action validation failed: {str(exc)[:500]}",
             )
 
         structured = StructuredAction(
@@ -398,13 +424,17 @@ class HybridExecutor:
         result: StructuredResult,
         requested: str,
     ) -> None:
-        """Record that a read was pointed at a file the plan did not name exactly.
+        """Record that a step was pointed at a file the plan did not name exactly.
 
         Same reasoning as the sheet substitution above: leniency that left no
         trace would be indistinguishable from the plan having been right, so the
         path the step asked for is carried in the evidence and in the trail. The
         two added keys are short paths, so this stays within the spirit of the
         dispatcher's evidence bound.
+
+        Applies to a modifying step as well as a read, because resolution now
+        happens during plan build. The wording is therefore neutral about what the
+        step did with the file.
         """
         result.evidence["requested_path"] = requested
         result.evidence["path_substituted"] = True
@@ -417,7 +447,7 @@ class HybridExecutor:
                 component="hybrid_executor",
                 outcome="path_substituted",
                 summary=(
-                    f"Read {action.target!r} for a step that asked for "
+                    f"Used {action.target!r} for a step that asked for "
                     f"{requested!r}, which does not exist."
                 ),
                 details={
@@ -477,23 +507,75 @@ def _resolve_references(
         if isinstance(resolved, dict) and part in resolved:
             resolved = resolved[part]
         elif isinstance(resolved, list) and part.isdigit():
-            resolved = resolved[int(part)]
+            index = int(part)
+            # An out-of-range index used to raise IndexError, which no caller
+            # caught, so it left the API as a 500 instead of a failed action.
+            if index >= len(resolved):
+                raise KeyError(
+                    f"Result reference index {index} is past the end of "
+                    f"{parts[0]!r}'s {len(resolved)}-item list: {reference}"
+                )
+            resolved = resolved[index]
         else:
             raise KeyError(f"Result reference field not found: {reference}")
     regex = value.get("regex")
     if regex is not None:
         if not isinstance(regex, str) or len(regex) > 300:
             raise ValueError("Reference regex must be a bounded string")
-        match = re.search(regex, str(resolved)[:5000])
+        # A model-supplied pattern is untrusted input: it may not compile at all.
+        try:
+            compiled = re.compile(regex)
+        except re.error as exc:
+            raise ValueError(f"Reference regex does not compile: {exc}") from exc
+        subject = str(resolved)[:5000]
+        match = compiled.search(subject)
         if match is None:
-            raise ValueError(f"Reference regex did not match {reference}")
+            # Naming the pattern next to a sample of the text is what makes this
+            # failure explicable: the two can be read side by side. The sample is
+            # clamped and redacted by `excerpt_for_diagnosis`.
+            raise ValueError(
+                f"Reference regex did not match {reference}. "
+                f"Pattern: {pattern_for_diagnosis(regex)}. Text read was: "
+                f"{excerpt_for_diagnosis(subject)}"
+            )
         group = value.get("group", 1)
         if not isinstance(group, (int, str)):
             raise ValueError("Reference regex group must be an integer or name")
-        resolved = match.group(group)
+        # THE LIVE 500: a pattern with no capture group, asked for group 1.
+        # `match.group` raises IndexError, which escaped as an HTTP 500 with a
+        # traceback. Refuse deliberately instead, and say what is wrong.
+        #
+        # Deliberately NOT falling back to group(0): the whole match is usually
+        # the value plus its surrounding label, so writing it into a spreadsheet
+        # cell would put "North Region Revenue: 27.4" where 27.4 belongs. A wrong
+        # value that verification would happily confirm is worse than a failure.
+        if isinstance(group, int) and not 0 <= group <= compiled.groups:
+            raise ValueError(
+                f"Reference regex defines {compiled.groups} capture group(s), so "
+                f"group {group} does not exist: {pattern_for_diagnosis(regex)}. Put "
+                "brackets around the value you want. Text read was: "
+                f"{excerpt_for_diagnosis(subject)}"
+            )
+        if isinstance(group, str) and group not in compiled.groupindex:
+            raise ValueError(
+                f"Reference regex has no group named {group!r}: {regex!r}"
+            )
+        try:
+            resolved = match.group(group)
+        except (IndexError, re.error) as exc:
+            raise ValueError(f"Reference regex group {group!r} is unusable: {exc}") from exc
     coerce = value.get("coerce")
     if coerce == "number":
-        number = float(resolved)
+        try:
+            number = float(resolved)
+        except (TypeError, ValueError) as exc:
+            # Same reasoning as the regex messages above: naming the value that
+            # would not convert is what makes this readable. Still a ValueError,
+            # so it still becomes a failed action rather than an exception.
+            raise ValueError(
+                f"Reference {reference} did not yield a number. Value was: "
+                f"{excerpt_for_diagnosis(resolved, 120)}"
+            ) from exc
         resolved = int(number) if number.is_integer() else number
     elif coerce == "string":
         resolved = str(resolved)
@@ -672,6 +754,73 @@ def _discover_readable_file(resolved: str) -> str | None:
     )
 
 
+def resolve_plan_target(
+    action_type: str,
+    target: str,
+    *,
+    read_elsewhere_in_plan: bool = False,
+) -> tuple[str, str | None]:
+    """Resolve a step's target at PLAN BUILD time, before policy and confirmation.
+
+    Returns `(target_to_use, path_it_replaced)`, where the second element is the
+    alias-expanded path the step originally named, or None when nothing changed.
+
+    WHY THIS RUNS AT PLAN TIME RATHER THAN AT EXECUTION TIME
+    --------------------------------------------------------
+    Discovery used to run inside the executor, which was safe only because it was
+    restricted to reads. Extending it to a modifying action there would have
+    broken the confirmation guarantee: the user approves a specific action, and
+    the approval is bound to a hash of its type, target, and parameters. Because
+    "confirmation accepted" is recorded BEFORE execution begins, retargeting
+    during execution would mean the user authorised changing one file while a
+    different file was changed. Resolving here instead means the policy decision,
+    the target the user is shown, and the confirmation hash all describe the file
+    that will actually be touched.
+
+    WHAT MAY BE RESOLVED
+    --------------------
+    A target that has to exist already (`REQUIRES_EXISTING_TARGET_ACTIONS`).
+
+    An action that CREATES its target normally keeps the path the plan gave, so a
+    create is never redirected onto an existing file. The one exception is
+    `read_elsewhere_in_plan`: when another step of the same plan reads that very
+    path, the plan itself is evidence that the file is expected to exist, because
+    reading a file the plan is about to bring into existence is meaningless. In
+    that case the create-capable step resolves like the read does, which also
+    keeps the plan internally coherent — inspecting one workbook and then writing
+    to a different one is never what was intended. Deciding this from the plan's
+    own shape keeps it deterministic; nothing here consults the model or the
+    user's wording.
+
+    `destination` / `save_as` are not touched here at all (see
+    `_resolve_path_parameters`).
+
+    The target is left EXACTLY as written unless an existing file was actually
+    found, so a plan that named its file correctly is never rewritten. Raises
+    ValueError, with the candidates named, when several files could have been
+    meant: at plan time that becomes a question for the user rather than a guess.
+    """
+    resolvable = action_type in REQUIRES_EXISTING_TARGET_ACTIONS or (
+        read_elsewhere_in_plan and action_type in CREATES_ITS_TARGET_ACTIONS
+    )
+    if not resolvable:
+        return target, None
+    try:
+        expanded = _resolve_local_path(target)
+    except ValueError:
+        # Not an alias-rooted path we can reason about; leave it to the executor
+        # to report in its own terms.
+        return target, None
+    if expanded is None:
+        return target, None
+    discovered = _discover_readable_file(expanded)
+    if discovered is None:
+        return target, None
+    # The alias-expanded path, not the raw alias form, so the recorded "asked for"
+    # value is directly comparable with the path that ended up being used.
+    return discovered, expanded
+
+
 def _resolve_local_path(value: str | None) -> str | None:
     if value is None:
         return None
@@ -688,6 +837,49 @@ def _resolve_local_path(value: str | None) -> str | None:
     return str(root.joinpath(*parts[1:]).resolve(strict=False))
 
 
+#: Parameters the planner states the way a person counts, from 1, while the
+#: executors index from 0. `STRUCTURED_PARAMETER_KEYS` allows `slide` on
+#: `presentation.read_text` alone (the rest of the presentation family takes no
+#: slide index at all), so converting by parameter NAME covers every action that
+#: can carry one today and stays correct if another ever gains the same
+#: parameter — there is no per-action list here to fall out of step.
+_ONE_BASED_PARAMETERS = ("slide",)
+
+
+def _to_executor_indexes(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Convert the planner's 1-based positions to the executors' 0-based indexes.
+
+    THE SINGLE CONVERSION POINT. Called once from `_run_structured`, which is the
+    only place a plan becomes a `StructuredAction`, so a value cannot be converted
+    twice and cannot reach an executor unconverted.
+
+    Exposing a 0-based index to the planner produced exactly the off-by-one you
+    would expect: asked to update slide 3, a live run emitted {"slide": 3} and the
+    read failed as out of range. Everyone says "slide 3" for the third slide, so
+    that is now the contract and the subtraction happens here instead.
+
+    A number below 1 is rejected rather than converted. This matters more than it
+    looks: {"slide": 0} would otherwise become index -1, which Python reads as the
+    LAST slide — a silently wrong target. Raising keeps that impossible, and the
+    caller turns it into a failed action rather than a wrong one.
+    """
+    converted = dict(parameters)
+    for key in _ONE_BASED_PARAMETERS:
+        if key not in converted or converted[key] is None:
+            continue
+        value = converted[key]
+        # bool is an int subclass; True must not quietly mean slide 1.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key} must be a whole number counting from 1, got {value!r}")
+        if value < 1:
+            raise ValueError(
+                f"{key} counts from 1, so {value} is not a slide number; "
+                "the first slide is 1"
+            )
+        converted[key] = value - 1
+    return converted
+
+
 def _resolve_path_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     """Resolve the parameters that carry a second path.
 
@@ -695,13 +887,19 @@ def _resolve_path_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     `save_as` say where output should GO, and a path that does not exist yet is
     the normal case for them. Redirecting one onto an existing file that happens
     to share its name would write somewhere the plan never named.
+
+    A null one never arrives here: plan build drops an optional parameter the
+    planner supplied as "not using this", and the executors read an absent
+    `save_as` as "edit the target in place". Anything still non-string is a
+    malformed plan, so it fails closed — naming the value, because the earlier
+    message gave only the parameter and was undiagnosable from a log.
     """
     resolved = dict(parameters)
-    for key in ("destination", "save_as"):
+    for key in sorted(PATH_LIKE_PARAMETERS):
         value = resolved.get(key)
         if value is not None:
             if not isinstance(value, str):
-                raise TypeError(f"{key} must be a path string")
+                raise TypeError(f"{key} must be a path string, not {value!r}")
             resolved[key] = _resolve_local_path(value)
     return resolved
 

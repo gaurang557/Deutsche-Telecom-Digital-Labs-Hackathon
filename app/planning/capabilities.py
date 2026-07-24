@@ -28,7 +28,13 @@ from pathlib import Path
 from typing import Any
 
 from app.schemas import StructuredActionType
-from app.structured_actions import FAMILY_EXTENSIONS, action_mutates
+from app.structured_actions import (
+    FAMILY_EXTENSIONS,
+    PATH_LIKE_PARAMETERS,
+    action_mutates,
+    is_absent_path_value,
+    required_parameters_for,
+)
 
 #: Determiners the model tends to put between a create verb and the artifact.
 _DETERMINERS = r"(?:me\s+)?(?:(?:a|an|the|another|some|new|blank|empty|fresh)\s+)*"
@@ -90,7 +96,10 @@ _TEXT_ONLY_ACTIONS = frozenset(
 )
 
 #: Parameters that carry a second path the runtime will resolve and write to.
-_PATH_PARAMETERS = ("destination", "save_as")
+#: Sorted for a deterministic report order when several candidates are wrong.
+#: Derived from the canonical set rather than restated, so the mismatch check and
+#: the stripping rule cannot come to disagree about what a path parameter is.
+_PATH_PARAMETERS = tuple(sorted(PATH_LIKE_PARAMETERS))
 
 _USER_PROFILE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]+Users[\\/]+([^\\/]+)", re.IGNORECASE)
 
@@ -231,6 +240,183 @@ def find_extension_family_mismatch(
                 f"{action_type.value} needs a {expected} path but the planner "
                 f"proposed {candidate!r}"
             )
+    return None
+
+
+#: A bare positional reference: wording that says WHERE to look rather than what
+#: is written there. Anchored at both ends and deliberately narrow, so it matches
+#: only a phrase that is nothing but a position — "slide 3", "the page 2" — and
+#: never a real sentence that happens to mention one ("slide 3 of the review").
+#: A deck whose text is literally just "Slide 3" is vanishingly unlikely, and the
+#: cost of being wrong is one repair attempt rather than a wrong action.
+_POSITIONAL_REFERENCE_PATTERN = re.compile(
+    r"^\s*(?:the\s+)?(?:slide|page|sheet|row|column)\s*#?\s*\d+\s*$",
+    re.IGNORECASE,
+)
+
+_REPLACE_TEXT_ACTIONS = frozenset(
+    {
+        StructuredActionType.DOCUMENT_REPLACE_TEXT.value,
+        StructuredActionType.PRESENTATION_REPLACE_TEXT.value,
+    }
+)
+
+
+def find_positional_search_text(action_type: Any, parameters: dict[str, Any]) -> str | None:
+    """Return a message when a replace step is searching for a position.
+
+    Observed live: asked to "update slide 3 of <deck>", the planner passed the
+    literal string "slide 3" as the text to find. That phrase is how the user
+    pointed at a location; it is not text that exists in the deck, so the step
+    could only ever fail with `text_not_found`.
+
+    SAFETY: returns a message or None, nothing else. It never rewrites the
+    parameter, never invents replacement text, and never touches policy,
+    confirmation, or verification — its only effect is to send the plan back for
+    one bounded repair attempt.
+    """
+    if str(action_type) not in _REPLACE_TEXT_ACTIONS:
+        return None
+    find = parameters.get("find")
+    if not isinstance(find, str) or not _POSITIONAL_REFERENCE_PATTERN.match(find):
+        return None
+    return (
+        f"{find!r} says where to look, not what is written there, so there is "
+        "nothing in the file to find. Read that slide or page first, then use the "
+        "exact wording it actually contains as the text to find."
+    )
+
+
+def find_null_required_parameter(action_type: Any, parameters: dict[str, Any]) -> str | None:
+    """Return a message when a REQUIRED parameter was supplied as null.
+
+    An optional parameter given as null means "not using this" and is dropped
+    during plan build. A REQUIRED one given as null means the plan is incomplete,
+    so it earns a repair attempt instead: dropping it would only produce a more
+    confusing failure further down.
+
+    Only `None` counts as no value here. An empty string can be a legitimate
+    required value — `file.write_text` with `content: ""` writes an empty file —
+    and calling that absent would reject a valid plan.
+    """
+    absent = sorted(
+        key
+        for key in required_parameters_for(str(action_type))
+        if key in parameters and parameters[key] is None
+    )
+    if not absent:
+        return None
+    names = ", ".join(absent)
+    return f"{names} is required and was given no value; supply a real value for it."
+
+
+def find_non_string_path_parameter(parameters: dict[str, Any]) -> str | None:
+    """Return a message when a path parameter holds something that is not a path.
+
+    `destination` and `save_as` name a file, so a number, an object or a list there
+    is a malformed plan. Naming the offending value gives the planner something it
+    can actually correct, where the old execution-time failure reported only the
+    parameter name and was undiagnosable from a log.
+
+    Values that mean "not using this" are NOT reported: they are dropped during
+    plan build instead. The absence test is shared with the stripping rule rather
+    than restated, because the two disagreeing would be its own bug — this check
+    runs on the draft, BEFORE stripping, so anything it rejects here can never
+    reach the point where it would have been harmlessly removed.
+    """
+    for key in sorted(PATH_LIKE_PARAMETERS):
+        if key not in parameters:
+            continue
+        value = parameters[key]
+        if value is None or isinstance(value, str) or is_absent_path_value(value):
+            continue
+        return (
+            f"{key} must be a file path written as a string, not {value!r}. "
+            f"Leave {key} out entirely to change the file named by target."
+        )
+    return None
+
+
+def find_invalid_reference_group(parameters: Any, *, depth: int = 0) -> str | None:
+    """Return a message when a `$ref`'s regex cannot yield the group it asks for.
+
+    A live run produced a `$ref` whose regex defined no capture group while asking
+    for group 1. `match.group(1)` raised `IndexError` mid-execution, which escaped
+    as an HTTP 500. The executor now refuses that deliberately, but a plan is
+    cheaper to fix than a run, so it is caught here first and the planner is told
+    to add the parentheses.
+
+    Walks nested structures because a `$ref` can sit anywhere in a parameter tree.
+    Returns a message or None: it never rewrites the pattern and never guesses
+    which group was meant.
+    """
+    if depth > 8:
+        return None
+    if isinstance(parameters, list):
+        for item in parameters[:100]:
+            problem = find_invalid_reference_group(item, depth=depth + 1)
+            if problem is not None:
+                return problem
+        return None
+    if not isinstance(parameters, dict):
+        return None
+    if "$ref" not in parameters:
+        for item in list(parameters.values())[:100]:
+            problem = find_invalid_reference_group(item, depth=depth + 1)
+            if problem is not None:
+                return problem
+        return None
+
+    regex = parameters.get("regex")
+    if regex is None or not isinstance(regex, str):
+        return None
+    try:
+        compiled = re.compile(regex)
+    except re.error as exc:
+        return f"the regex {regex!r} is not a valid pattern ({exc})."
+    group = parameters.get("group", 1)
+    if isinstance(group, bool) or not isinstance(group, (int, str)):
+        return None
+    if isinstance(group, int) and not 0 <= group <= compiled.groups:
+        return (
+            f"the regex {regex!r} has {compiled.groups} capture group(s), so "
+            f"group {group} does not exist. Put parentheses around the part of "
+            'the pattern that is the value you want, for example "revenue: '
+            '([0-9.]+)" with "group": 1.'
+        )
+    if isinstance(group, str) and group not in compiled.groupindex:
+        return f"the regex {regex!r} has no group named {group!r}."
+    return None
+
+
+def find_invalid_slide_number(parameters: dict[str, Any]) -> str | None:
+    """Return a message when a `slide` parameter is not a slide number.
+
+    Slide positions are 1-based on the planner-facing contract, the way a person
+    counts them. Catching a bad one here gives the planner a bounded repair
+    attempt; `_to_executor_indexes` refuses it again at the conversion boundary,
+    so a nonsensical value can never reach an executor either way.
+
+    SAFETY: returns a message or None. It never rewrites the parameter and never
+    guesses which slide was meant.
+    """
+    if "slide" not in parameters:
+        return None
+    value = parameters["slide"]
+    if value is None:
+        return None
+    # A `$ref` is still a placeholder here; its value is unknowable until the
+    # earlier step runs. The boundary check sees the resolved value and refuses it
+    # there if it is not a slide number, so nothing is let through unchecked.
+    if isinstance(value, dict):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return f"slide must be a whole number counting from 1, not {value!r}."
+    if value < 1:
+        return (
+            f"slide counts from 1, the way you would say it, so {value} is not a "
+            "slide number. The first slide is 1."
+        )
     return None
 
 

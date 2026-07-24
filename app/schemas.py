@@ -298,6 +298,11 @@ class Action(BaseModel):
     requires_confirmation: bool
     confirmation_hash: str | None = None
     expected_result: dict[str, Any]
+    #: The path this step originally named, when `target` was resolved onto a file
+    #: that actually exists during plan build. Audit/report metadata only: it is
+    #: deliberately NOT part of `confirmation_hash`, which binds what will be
+    #: acted on, not where the request started.
+    resolved_from: str | None = None
 
 
 class ActionPlan(BaseModel):
@@ -344,12 +349,65 @@ class VerificationResult(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
 
 
+class StepFact(BaseModel):
+    """One labelled, already-bounded value about what a step did."""
+
+    label: str
+    value: str
+
+
+class StepExcerpt(BaseModel):
+    """A clamped sample of content a step read out of a file.
+
+    `untrusted` is the important field. Every excerpt here is bytes that came out
+    of a document, never something the agent said, so the UI must present it as
+    quoted material. The malicious-PDF fixture makes this concrete: its injected
+    "ignore previous instructions" text will appear inside an excerpt, and it has
+    to read as content found in a file rather than as the agent's own words.
+    """
+
+    label: str
+    body: str
+    truncated: bool
+    untrusted: bool = True
+
+
+class StepComparison(BaseModel):
+    """What a modifying step intended, against what was seen after reopening.
+
+    This is the pair worth reading in the whole UI: `observed` comes from the
+    verifier re-reading the file from disk, so showing it next to `expected` is the
+    difference between claiming a change and demonstrating one.
+    """
+
+    method: str | None = None
+    expected: str | None = None
+    observed: str | None = None
+
+
+class StepDetail(BaseModel):
+    """A bounded, redacted, DISPLAY-ONLY view of one step's evidence.
+
+    Derived from evidence the executors already return; it adds no capability and
+    collects nothing new. Attached at the API boundary AFTER the run is persisted,
+    so surfacing it does not enlarge what is stored.
+    """
+
+    summary: str
+    facts: list[StepFact] = Field(default_factory=list)
+    excerpt: StepExcerpt | None = None
+    comparison: StepComparison | None = None
+    note: str | None = None
+
+
 class ActionResult(BaseModel):
     action_id: UUID
     status: ActionStatus
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     verification: VerificationResult | None = None
+    #: Display-only, and deliberately absent until the API attaches it.
+    detail: StepDetail | None = None
 
 
 class ExecutePlanRequest(BaseModel):

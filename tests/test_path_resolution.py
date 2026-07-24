@@ -43,6 +43,7 @@ from app.execution.hybrid import (
     _resolve_path_parameters,
     build_structured_dispatcher,
 )
+from app.planning.exceptions import InvalidPlannerResponseError
 from app.planning.normalizer import build_action_plan
 from app.schemas import DraftAction, DraftPlan, TaskRequest
 
@@ -72,6 +73,12 @@ def _workbook(path: Path, label: str) -> None:
     sheet.append([label, None])
     workbook.save(path)
     workbook.close()
+
+
+def _workbook_bytes(path: Path, label: str) -> bytes:
+    """A workbook, plus its exact bytes, so a test can prove it was untouched."""
+    _workbook(path, label)
+    return path.read_bytes()
 
 
 def _touch(path: Path) -> Path:
@@ -268,7 +275,13 @@ def test_a_destination_parameter_is_resolved_but_never_searched(desktop: Path) -
 
 
 async def test_a_write_creates_the_path_the_plan_named(desktop: Path) -> None:
-    """A create must not be captured by a same-named workbook found elsewhere."""
+    """A create must not be captured by a same-named workbook found elsewhere.
+
+    The plan here only writes. Nothing in it reads that workbook, so there is no
+    evidence the file was expected to exist and "create it where I said" is the
+    only reading of the request — even though a same-named workbook is sitting one
+    folder away. Contrast the next test, where the plan reads the workbook first.
+    """
     elsewhere = desktop / "handover" / "ledger.xlsx"
     _workbook(elsewhere, "Coastal")
     plan = build_action_plan(
@@ -290,6 +303,138 @@ async def test_a_write_creates_the_path_the_plan_named(desktop: Path) -> None:
         assert workbook.active["B2"].value is None
     finally:
         workbook.close()
+
+
+async def test_a_write_follows_the_workbook_the_same_plan_reads(desktop: Path) -> None:
+    """A plan that reads a workbook and then writes to it must mean one file.
+
+    This is the primary workflow's shape: inspect the sheet, then fill a cell in
+    it. Reading a file the plan is about to create would be meaningless, so the
+    read is proof the workbook is expected to exist — and letting the write create
+    a second, empty workbook beside it would report success while leaving the
+    user's real file untouched.
+    """
+    actual = desktop / "handover" / "ledger.xlsx"
+    _workbook(actual, "Coastal")
+    plan = build_action_plan(
+        TaskRequest(text="read Desktop/ledger.xlsx and record the takings in it"),
+        DraftPlan(
+            summary="I'll look at that sheet and record the takings.",
+            actions=[
+                DraftAction(
+                    step_key="look",
+                    type="spreadsheet.read_range",
+                    target="Desktop/ledger.xlsx",
+                    parameters={"range": "A1:B2"},
+                    description="Look at the sheet.",
+                    expected_result={"contains": "the label"},
+                ),
+                DraftAction(
+                    step_key="record",
+                    type="spreadsheet.write_cell",
+                    target="Desktop/ledger.xlsx",
+                    parameters={"cell": "B2", "value": 27.4},
+                    depends_on=["look"],
+                    description="Record the takings.",
+                    expected_result={"written": True},
+                ),
+            ],
+        ),
+    )
+
+    write = plan.actions[1]
+    # Both steps agree on one file, and the write is bound to the resolved one.
+    assert _same(write.target, actual)
+    assert _same(plan.actions[0].target, actual)
+    assert _same(write.resolved_from, desktop / "ledger.xlsx")
+
+    response = await HybridExecutor().execute_plan(plan, set())
+
+    assert response.status == "completed"
+    # No phantom workbook was created beside the real one.
+    assert not (desktop / "ledger.xlsx").exists()
+    workbook = load_workbook(actual)
+    try:
+        assert workbook.active["B2"].value == 27.4
+    finally:
+        workbook.close()
+
+
+def test_a_write_keeps_the_named_path_when_nothing_with_that_name_exists(
+    desktop: Path,
+) -> None:
+    """Zero matches is the genuine create case, even with a read step present.
+
+    Nothing anywhere is called ledger.xlsx, so there is nothing to follow and the
+    write must land exactly where the plan said.
+    """
+    plan = build_action_plan(
+        TaskRequest(text="read Desktop/ledger.xlsx and record the takings in it"),
+        DraftPlan(
+            summary="I'll look at that sheet and record the takings.",
+            actions=[
+                DraftAction(
+                    step_key="look",
+                    type="spreadsheet.read_range",
+                    target="Desktop/ledger.xlsx",
+                    parameters={"range": "A1:B2"},
+                    description="Look at the sheet.",
+                    expected_result={"contains": "the label"},
+                ),
+                DraftAction(
+                    step_key="record",
+                    type="spreadsheet.write_cell",
+                    target="Desktop/ledger.xlsx",
+                    parameters={"cell": "B2", "value": 27.4},
+                    depends_on=["look"],
+                    description="Record the takings.",
+                    expected_result={"written": True},
+                ),
+            ],
+        ),
+    )
+
+    assert plan.actions[1].target == "Desktop/ledger.xlsx"
+    assert plan.actions[1].resolved_from is None
+
+
+def test_an_ambiguous_write_that_the_plan_reads_fails_loudly(desktop: Path) -> None:
+    first = _workbook_bytes(desktop / "one" / "ledger.xlsx", "Coastal")
+    second = _workbook_bytes(desktop / "two" / "ledger.xlsx", "Inland")
+
+    with pytest.raises(InvalidPlannerResponseError) as excinfo:
+        build_action_plan(
+            TaskRequest(text="read Desktop/ledger.xlsx and record the takings in it"),
+            DraftPlan(
+                summary="I'll record the takings.",
+                actions=[
+                    DraftAction(
+                        step_key="look",
+                        type="spreadsheet.read_range",
+                        target="Desktop/ledger.xlsx",
+                        parameters={"range": "A1:B2"},
+                        description="Look at the sheet.",
+                        expected_result={"contains": "the label"},
+                    ),
+                    DraftAction(
+                        step_key="record",
+                        type="spreadsheet.write_cell",
+                        target="Desktop/ledger.xlsx",
+                        parameters={"cell": "B2", "value": 27.4},
+                        depends_on=["look"],
+                        description="Record the takings.",
+                        expected_result={"written": True},
+                    ),
+                ],
+            ),
+        )
+
+    error = str(excinfo.value)
+    assert "Desktop/one/ledger.xlsx" in error
+    assert "Desktop/two/ledger.xlsx" in error
+    assert (desktop / "one" / "ledger.xlsx").read_bytes() == first
+    assert (desktop / "two" / "ledger.xlsx").read_bytes() == second
+    assert not (desktop / "ledger.xlsx").exists()
 
 
 # ── end to end, the failure that started this ─────────────────────────────────
@@ -342,19 +487,27 @@ async def test_a_read_with_nothing_to_find_reports_the_path_it_was_given(
     assert "ledger.xlsx" in error
 
 
-async def test_an_ambiguous_read_fails_without_choosing_a_file(desktop: Path) -> None:
-    _workbook(desktop / "one" / "ledger.xlsx", "Coastal")
-    _workbook(desktop / "two" / "ledger.xlsx", "Inland")
-    plan = build_action_plan(
-        TaskRequest(text="read the takings from Desktop/ledger.xlsx"),
-        _single_step_plan(
-            "spreadsheet.read_range", "Desktop/ledger.xlsx", {"range": "A1:B2"}
-        ),
-    )
+def test_an_ambiguous_read_fails_at_plan_time_without_choosing_a_file(
+    desktop: Path,
+) -> None:
+    # Detected while the plan is being built, deliberately: only the user can say
+    # which folder they meant, so nothing should reach execution at all.
+    first = _workbook_bytes(desktop / "one" / "ledger.xlsx", "Coastal")
+    second = _workbook_bytes(desktop / "two" / "ledger.xlsx", "Inland")
 
-    response = await HybridExecutor().execute_plan(plan, set())
+    with pytest.raises(InvalidPlannerResponseError) as excinfo:
+        build_action_plan(
+            TaskRequest(text="read the takings from Desktop/ledger.xlsx"),
+            _single_step_plan(
+                "spreadsheet.read_range", "Desktop/ledger.xlsx", {"range": "A1:B2"}
+            ),
+        )
 
-    assert response.status == "failed"
-    error = response.results[0].error or ""
+    error = str(excinfo.value)
+    # Both candidates must stay named, so a future change cannot quietly drop to
+    # picking one of them.
     assert "Desktop/one/ledger.xlsx" in error
     assert "Desktop/two/ledger.xlsx" in error
+    # No candidate was opened, read, or altered.
+    assert (desktop / "one" / "ledger.xlsx").read_bytes() == first
+    assert (desktop / "two" / "ledger.xlsx").read_bytes() == second

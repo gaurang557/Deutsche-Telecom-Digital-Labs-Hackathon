@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import fitz
 import pytest
@@ -26,6 +26,7 @@ from app.execution.hybrid import (
 )
 from app.main import app
 from app.planning.normalizer import build_action_plan
+from app.planning.plan_repair import find_advisory_problems, find_recoverable_problems
 from app.planning.planner import SYSTEM_PROMPT, OllamaPlanner
 from app.planning.repository import PlanRepository
 from app.schemas import (
@@ -230,6 +231,216 @@ def test_pdf_to_xlsx_runs_through_production_api_path(tmp_path: Path) -> None:
         assert workbook["Revenue"]["B2"].value == 27.4
     finally:
         workbook.close()
+
+
+def test_step_detail_is_surfaced_in_the_response_but_never_persisted(
+    tmp_path: Path,
+) -> None:
+    """Evidence becomes visible on screen without enlarging what is stored.
+
+    The detail is attached AFTER `repository.complete()`, so the durable record is
+    written exactly as it was before this feature existed.
+    """
+    pdf_path = tmp_path / "quarterly_report.pdf"
+    workbook_path = tmp_path / "results_blank.xlsx"
+    _make_pdf(pdf_path, "North Region Revenue: 27.4")
+    _make_workbook(workbook_path)
+    repository = PlanRepository(tmp_path / "runtime.db")
+    audit = InMemoryAuditSink()
+    executor = HybridExecutor(
+        dispatcher=build_structured_dispatcher(audit),
+        audit=audit,
+    )
+    app.dependency_overrides[get_planner] = lambda: _FixedPlanner(
+        _golden_draft(pdf_path, workbook_path)
+    )
+    app.dependency_overrides[get_plan_repository] = lambda: repository
+    app.dependency_overrides[get_desktop_executor] = lambda: executor
+    try:
+        with TestClient(app) as client:
+            planned = client.post(
+                "/api/v1/plans",
+                json={"text": f"Copy North revenue from {pdf_path} into {workbook_path}"},
+            )
+            plan_id = planned.json()["plan"]["plan_id"]
+            executed = client.post(
+                f"/api/v1/plans/{plan_id}/execute",
+                json={"approved_action_ids": [], "approved_action_hashes": {}},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert executed.status_code == 200
+    results = executed.json()["results"]
+
+    # The read step shows the text it extracted, as a bounded, quoted excerpt.
+    read_detail = results[0]["detail"]
+    assert "quarterly_report.pdf" in read_detail["summary"]
+    assert "North Region Revenue" in read_detail["excerpt"]["body"]
+    assert read_detail["excerpt"]["untrusted"] is True
+
+    # The write step shows the value and what was found after reopening the file.
+    write_detail = results[-1]["detail"]
+    assert any(fact["label"] == "Cell" for fact in write_detail["facts"])
+    assert write_detail["comparison"]["observed"] is not None
+
+    # ...and none of it reached the stored record.
+    stored = repository.detail(UUID(plan_id))
+    assert stored is not None
+    assert stored.results
+    assert all(result.detail is None for result in stored.results)
+
+
+# ── a bad $ref must fail the action, never escape as an HTTP 500 ─────────────
+def _group_less_reference_draft(pdf_path: Path, workbook_path: Path) -> DraftPlan:
+    """The exact live 500: a regex with NO capture group, asking for group 1.
+
+    `match.group(1)` raised `IndexError` inside `_resolve_references`, which
+    nothing caught, so it propagated out of `execute_plan` and FastAPI returned a
+    raw traceback.
+    """
+    return DraftPlan(
+        summary="Read the revenue and write it to the workbook.",
+        actions=[
+            DraftAction(
+                step_key="pdf_value",
+                type="pdf.read_text",
+                target=str(pdf_path),
+                description="Read the bounded PDF text.",
+                expected_result={"contains": "North Region Revenue"},
+            ),
+            DraftAction(
+                step_key="write_value",
+                type="spreadsheet.write_cell",
+                target=str(workbook_path),
+                parameters={
+                    "sheet": "Revenue",
+                    "cell": "B2",
+                    "value": {
+                        # No parentheses anywhere, so there is no group 1.
+                        "$ref": "pdf_value.evidence.text",
+                        "regex": r"North Region Revenue:\s*[0-9.]+",
+                        "group": 1,
+                    },
+                },
+                depends_on=["pdf_value"],
+                description="Write the extracted revenue.",
+                expected_result={"cell": "Revenue!B2"},
+            ),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_group_less_reference_fails_the_action_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "quarterly_report.pdf"
+    workbook_path = tmp_path / "results_blank.xlsx"
+    _make_pdf(pdf_path, "North Region Revenue: 27.4")
+    _make_workbook(workbook_path)
+    plan = build_action_plan(
+        TaskRequest(text="Put the North revenue into the workbook"),
+        _group_less_reference_draft(pdf_path, workbook_path),
+    )
+
+    # No exception escapes: the call returns normally with a failed step.
+    response = await HybridExecutor().execute_plan(
+        plan,
+        {action.action_id for action in plan.actions},
+        approved_action_hashes={
+            action.action_id: action.confirmation_hash or "" for action in plan.actions
+        },
+    )
+
+    write_result = response.results[-1]
+    assert write_result.status == "failed"
+    assert "capture group" in (write_result.error or "")
+    # And the cell was NOT filled with the whole match instead of the number.
+    workbook = load_workbook(workbook_path, data_only=False)
+    try:
+        assert workbook["Revenue"]["B2"].value is None
+    finally:
+        workbook.close()
+
+
+def test_a_group_less_reference_does_not_return_a_500(tmp_path: Path) -> None:
+    """The client must never receive a traceback for bad plan data."""
+    pdf_path = tmp_path / "quarterly_report.pdf"
+    workbook_path = tmp_path / "results_blank.xlsx"
+    _make_pdf(pdf_path, "North Region Revenue: 27.4")
+    _make_workbook(workbook_path)
+    repository = PlanRepository(tmp_path / "runtime.db")
+    audit = InMemoryAuditSink()
+    executor = HybridExecutor(
+        dispatcher=build_structured_dispatcher(audit),
+        audit=audit,
+    )
+    app.dependency_overrides[get_planner] = lambda: _FixedPlanner(
+        _group_less_reference_draft(pdf_path, workbook_path)
+    )
+    app.dependency_overrides[get_plan_repository] = lambda: repository
+    app.dependency_overrides[get_desktop_executor] = lambda: executor
+    try:
+        with TestClient(app) as client:
+            planned = client.post(
+                "/api/v1/plans",
+                json={"text": f"Put North revenue from {pdf_path} into {workbook_path}"},
+            )
+            assert planned.status_code == 201
+            plan_id = planned.json()["plan"]["plan_id"]
+            approvals = [
+                action["action_id"]
+                for action in planned.json()["plan"]["actions"]
+                if action["requires_confirmation"]
+            ]
+            hashes = {
+                action["action_id"]: action["confirmation_hash"]
+                for action in planned.json()["plan"]["actions"]
+                if action["requires_confirmation"]
+            }
+            executed = client.post(
+                f"/api/v1/plans/{plan_id}/execute",
+                json={
+                    "approved_action_ids": approvals,
+                    "approved_action_hashes": hashes,
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert executed.status_code != 500
+    assert executed.status_code == 200
+    body = executed.json()
+    assert body["status"] == "failed"
+    # A bounded, readable reason — not a traceback.
+    assert "Traceback" not in executed.text
+
+
+def test_a_group_less_reference_is_reported_for_repair_at_plan_time(
+    tmp_path: Path,
+) -> None:
+    """Cheaper to fix the plan than to run it, so the planner gets a chance."""
+    problems = find_recoverable_problems(
+        _group_less_reference_draft(tmp_path / "a.pdf", tmp_path / "b.xlsx"),
+        "Put the North revenue into the workbook",
+    )
+
+    assert len(problems) == 1
+    assert "capture group" in problems[0]
+
+
+def test_the_golden_reference_with_a_real_group_is_not_reported(
+    tmp_path: Path,
+) -> None:
+    """The canonical workflow-1 $ref must not trip the new check."""
+    assert (
+        find_recoverable_problems(
+            _golden_draft(tmp_path / "a.pdf", tmp_path / "b.xlsx"),
+            _WORKFLOW_1_REQUEST,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -570,6 +781,195 @@ def test_ollama_planner_accepts_canonical_structured_golden_plan(
     assert parsed.actions[-1].parameters["value"]["$ref"] == (
         "pdf_value.evidence.text"
     )
+
+
+# ── the demo workflows must survive every deterministic planning check ───────
+# Several semantic checks were added in quick succession, each feeding the repair
+# loop. They run on EVERY plan, so a false positive on a workflow that used to
+# work would be far worse than the failure any of them was written to catch.
+# These tests pin the demo plans against the whole stack of checks at once.
+_WORKFLOW_1_REQUEST = (
+    "Find the North Region revenue in quarterly_report.pdf and put it in the "
+    "North row of results_blank.xlsx."
+)
+_MALICIOUS_PDF_REQUEST = (
+    "Find North's revenue in malicious_report.pdf and update results_blank.xlsx."
+)
+_FILE_ORGANIZATION_REQUEST = (
+    "Move all PDFs in file_organization into Reports, but don't replace anything "
+    "already there."
+)
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [_WORKFLOW_1_REQUEST, _MALICIOUS_PDF_REQUEST, "Update the workbook"],
+)
+def test_workflow_one_reports_no_recoverable_problem(
+    tmp_path: Path,
+    request_text: str,
+) -> None:
+    """The pdf -> xlsx plan must not trip any check, under any demo phrasing."""
+    pdf_path = tmp_path / "quarterly_report.pdf"
+    workbook_path = tmp_path / "results_blank.xlsx"
+    _make_pdf(pdf_path, "North Region Revenue: 27.4")
+    _make_workbook(workbook_path)
+
+    problems = find_recoverable_problems(
+        _golden_draft(pdf_path, workbook_path), request_text
+    )
+
+    assert problems == []
+
+
+def test_workflow_one_still_builds_an_action_plan(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "quarterly_report.pdf"
+    workbook_path = tmp_path / "results_blank.xlsx"
+    _make_pdf(pdf_path, "North Region Revenue: 27.4")
+    _make_workbook(workbook_path)
+
+    plan = build_action_plan(
+        TaskRequest(text=_WORKFLOW_1_REQUEST),
+        _golden_draft(pdf_path, workbook_path),
+    )
+
+    assert [str(action.type) for action in plan.actions] == [
+        "pdf.read_text",
+        "spreadsheet.read_range",
+        "spreadsheet.write_cell",
+    ]
+    # `overwrite: False` is a real value on an optional parameter and must NOT be
+    # mistaken for an absent one by the null-omission rule.
+    assert plan.actions[-1].parameters["overwrite"] is False
+    # The $ref binding that carries the PDF value survives normalisation.
+    assert plan.actions[-1].parameters["value"]["$ref"] == "pdf_value.evidence.text"
+
+
+def test_workflow_one_raises_no_advisory_either(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "quarterly_report.pdf"
+    workbook_path = tmp_path / "results_blank.xlsx"
+    _make_pdf(pdf_path, "North Region Revenue: 27.4")
+    _make_workbook(workbook_path)
+
+    assert find_advisory_problems(_golden_draft(pdf_path, workbook_path)) == []
+
+
+def _file_organization_draft(source: Path, destination: Path) -> DraftPlan:
+    """The MOVE step only — enumeration is not something a plan can express.
+
+    `file.list` exists in the executor but is NOT in
+    `PLANNER_VISIBLE_STRUCTURED_ACTIONS`, and no other planner-visible action
+    enumerates a directory. So "move ALL PDFs in this folder" cannot be planned as
+    a discover-then-act sequence: the planner can only move files the request
+    already names. This draft therefore pins what IS plannable — a single move that
+    refuses to replace an existing file — rather than asserting a shape the schema
+    would reject.
+    """
+    return DraftPlan(
+        summary="Move the PDF into the Reports folder without replacing anything.",
+        actions=[
+            DraftAction(
+                step_key="move_it",
+                type="file.move",
+                target=str(source),
+                parameters={"destination": str(destination), "overwrite": False},
+                description="Move the PDF into Reports.",
+                expected_result={"moved": True},
+            ),
+        ],
+    )
+
+
+def test_the_move_step_of_file_organization_reports_no_recoverable_problem(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "file_organization" / "report_february.pdf"
+    source.parent.mkdir(parents=True)
+    _make_pdf(source, "February report")
+    reports = tmp_path / "file_organization" / "Reports"
+    reports.mkdir()
+
+    problems = find_recoverable_problems(
+        _file_organization_draft(source, reports / source.name),
+        _FILE_ORGANIZATION_REQUEST,
+    )
+
+    assert problems == []
+
+
+def test_the_move_step_of_file_organization_still_builds_an_action_plan(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "file_organization" / "report_february.pdf"
+    source.parent.mkdir(parents=True)
+    _make_pdf(source, "February report")
+    reports = tmp_path / "file_organization" / "Reports"
+    reports.mkdir()
+
+    plan = build_action_plan(
+        TaskRequest(text=_FILE_ORGANIZATION_REQUEST),
+        _file_organization_draft(source, reports / source.name),
+    )
+
+    assert [str(action.type) for action in plan.actions] == ["file.move"]
+    # `destination` is REQUIRED for file.move, so it must survive untouched.
+    assert plan.actions[-1].parameters["destination"] == str(reports / source.name)
+    assert plan.actions[-1].parameters["overwrite"] is False
+
+
+def test_the_docx_to_pptx_workflow_shape_reports_no_recoverable_problem(
+    tmp_path: Path,
+) -> None:
+    """A replace step naming a real placeholder token plans cleanly.
+
+    This is the shape workflow 2 needs. It passes every check — which locates the
+    remaining difficulty in the MODEL producing this shape, not in the checks
+    refusing it.
+    """
+    document_path = tmp_path / "report_summary.docx"
+    template_path = tmp_path / "summary_template.pptx"
+    document = Document()
+    document.add_paragraph("Final Recommendation: prioritize retention.")
+    document.save(document_path)
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1)).text = "A_TOKEN"
+    presentation.save(template_path)
+
+    draft = DraftPlan(
+        summary="Read the recommendation and fill in the deck placeholder.",
+        actions=[
+            DraftAction(
+                step_key="brief",
+                type="document.read_text",
+                target=str(document_path),
+                description="Read the recommendation.",
+                expected_result={"contains": "Final Recommendation"},
+            ),
+            DraftAction(
+                step_key="deck",
+                type="presentation.replace_text",
+                target=str(template_path),
+                parameters={
+                    "find": "A_TOKEN",
+                    "replace": {
+                        "$ref": "brief.evidence.text",
+                        "regex": r"Final Recommendation:\s*(.+)",
+                        "group": 1,
+                        "coerce": "string",
+                    },
+                },
+                depends_on=["brief"],
+                description="Fill in the placeholder.",
+                expected_result={"contains": "retention"},
+            ),
+        ],
+    )
+    request = "Read the recommendation from report_summary.docx and update slide 3 of summary_template.pptx."
+
+    assert find_recoverable_problems(draft, request) == []
+    assert find_advisory_problems(draft) == []
+    assert build_action_plan(TaskRequest(text=request), draft) is not None
 
 
 def test_windows_open_application_uses_allowlisted_executable(monkeypatch) -> None:

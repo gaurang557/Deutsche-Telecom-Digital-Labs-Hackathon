@@ -1,6 +1,8 @@
+import os
 import platform
 from uuid import UUID, uuid4
 
+from app.execution.hybrid import resolve_plan_target
 from app.planning.capabilities import (
     find_extension_family_mismatch,
     find_fabricated_user_profile_path,
@@ -10,6 +12,7 @@ from app.schemas import (
     Action,
     ActionPlan,
     ActionType,
+    DraftAction,
     DraftPlan,
     RiskLevel,
     StructuredActionType,
@@ -17,7 +20,10 @@ from app.schemas import (
 )
 from app.structured_actions import (
     MAC_ONLY_LEGACY_ACTIONS,
+    PATH_LIKE_PARAMETERS,
+    REQUIRES_EXISTING_TARGET_ACTIONS,
     action_identity_hash,
+    strip_absent_optional_parameters,
     structured_confirmation_required,
     structured_risk,
 )
@@ -108,7 +114,7 @@ def _reject_hallucinated_paths(draft: DraftPlan) -> None:
         candidates = [action.target]
         candidates.extend(
             value
-            for key in ("destination", "save_as")
+            for key in sorted(PATH_LIKE_PARAMETERS)
             if isinstance(value := action.parameters.get(key), str)
         )
         for candidate in candidates:
@@ -128,6 +134,46 @@ def _reject_hallucinated_paths(draft: DraftPlan) -> None:
             raise InvalidPlannerResponseError(
                 f"The planner proposed a mismatched file type: {mismatch}"
             )
+
+
+def _targets_read_by_plan(actions: list[DraftAction]) -> set[str]:
+    """Normalised targets that some step of this plan needs to already exist.
+
+    Used to tell a genuine "create this file" step apart from one that is really
+    filling in a file the plan has already read. A step that creates its target
+    keeps the path it was given unless the plan itself shows the file is expected
+    to be there.
+    """
+    return {
+        os.path.normcase(action.target)
+        for action in actions
+        if isinstance(action.type, StructuredActionType)
+        and action.type.value in REQUIRES_EXISTING_TARGET_ACTIONS
+    }
+
+
+def _resolve_target_for_plan(
+    action_type: str,
+    target: str,
+    *,
+    read_elsewhere_in_plan: bool,
+) -> tuple[str, str | None]:
+    """Point a step at the file it meant, while the plan is still being built.
+
+    Delegates the bounded search to `resolve_plan_target` rather than repeating
+    it, so the depth, directory-budget, candidate, symlink/junction, hidden-tree
+    and containment limits all remain defined in exactly one place.
+
+    Several possible files is not something to resolve or to re-prompt the model
+    about — only the user knows which folder they meant — so it fails closed here
+    with the candidates named.
+    """
+    try:
+        return resolve_plan_target(
+            action_type, target, read_elsewhere_in_plan=read_elsewhere_in_plan
+        )
+    except ValueError as exc:
+        raise InvalidPlannerResponseError(str(exc)) from exc
 
 
 def build_action_plan(request: TaskRequest, draft: DraftPlan) -> ActionPlan:
@@ -175,18 +221,35 @@ def build_action_plan(request: TaskRequest, draft: DraftPlan) -> ActionPlan:
     key_to_id: dict[str, UUID] = {
         action.step_key: uuid4() for action in actions_to_build
     }
+    read_targets = _targets_read_by_plan(actions_to_build)
     actions: list[Action] = []
     for sequence, action in enumerate(actions_to_build, start=1):
         action_type = action.type.value
+        # Resolve the target BEFORE risk, the confirmation summary, and the
+        # confirmation hash are derived, so all three describe the file that will
+        # actually be touched. Doing this at execution time instead would let a
+        # user approve one file and have another one changed.
+        target, resolved_from = _resolve_target_for_plan(
+            action_type,
+            action.target,
+            read_elsewhere_in_plan=os.path.normcase(action.target) in read_targets,
+        )
+        # Drop optional parameters the planner filled in as null BEFORE anything
+        # derives from them. Everything below — risk, the confirmation decision,
+        # the summary the user reads, the confirmation hash, and the parameters
+        # handed to the executor — uses this one dict, so what the user approves is
+        # exactly what runs. Stripping after the hash would reopen the
+        # confirm-one-thing-do-another hole.
+        parameters = strip_absent_optional_parameters(action_type, action.parameters)
         if isinstance(action.type, StructuredActionType):
             requires_confirmation = structured_confirmation_required(
                 action_type,
-                action.parameters,
+                parameters,
             )
         else:
             requires_confirmation = action.type in _CONFIRMATION_ACTIONS
         confirmation_hash = (
-            action_identity_hash(action_type, action.target, action.parameters)
+            action_identity_hash(action_type, target, parameters)
             if requires_confirmation
             else None
         )
@@ -196,16 +259,17 @@ def build_action_plan(request: TaskRequest, draft: DraftPlan) -> ActionPlan:
                 sequence=sequence,
                 step_key=action.step_key,
                 type=action.type,
-                target=action.target,
+                target=target,
+                resolved_from=resolved_from,
                 description=action.description.strip()
-                or describe_action(action.type, action.target, action.parameters),
-                parameters=action.parameters,
+                or describe_action(action.type, target, parameters),
+                parameters=parameters,
                 depends_on=[
                     key_to_id[key]
                     for key in action.depends_on
                     if key in retained_keys
                 ],
-                risk=classify_risk(action.type, action.parameters),
+                risk=classify_risk(action.type, parameters),
                 requires_confirmation=requires_confirmation,
                 confirmation_hash=confirmation_hash,
                 expected_result=action.expected_result,

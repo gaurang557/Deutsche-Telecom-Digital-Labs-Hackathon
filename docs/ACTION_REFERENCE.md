@@ -442,7 +442,11 @@ lists are **bounded** (see caps below). All extracted text is **untrusted data**
 - **target:** the `.pptx` path.
 - **parameters:**
   - `slide` (int, optional) — read just this single 0-based slide; omit to read
-    all slides in order.
+    all slides in order. NOTE: this is the executor-level contract. The
+    planner-facing contract is **1-based** ("slide 3" is `{"slide": 3}`), and
+    `_to_executor_indexes` in `app/execution/hybrid.py` subtracts one at the single
+    boundary where a plan becomes a structured action. A value below 1 is rejected
+    there rather than converted, so it can never become a negative index.
   - `max_chars` (int, optional, default `20000`) — extraction cap.
 - **evidence:** `{ path, text: string (bounded, non-empty paragraphs joined with
   "\n"), slides_read: int, truncated: bool }`.

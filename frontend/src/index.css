@@ -872,6 +872,148 @@ textarea:focus-visible {
   background: #fff8fb;
 }
 
+/* Per-step evidence: a plain summary line, plus collapsed detail so the plan
+   stays scannable. */
+.step-detail {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+}
+
+/* Both of these are <p> inside `.result-card li`, which paints paragraphs
+   error-red because that is where a step's error message goes. They are not
+   errors, so they need enough specificity to say so. */
+.step-detail p.step-detail__summary {
+  margin: 0;
+  color: #35353b;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.step-detail p.step-detail__note {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.step-detail p.step-detail__note > span {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--subtle);
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 13px;
+  text-align: center;
+}
+
+.step-detail__more {
+  margin-top: 6px;
+}
+
+.step-detail__more > summary {
+  cursor: pointer;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.step-detail__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 9px 0 0;
+}
+
+.step-detail__facts dt,
+.step-detail__check dt {
+  color: var(--subtle);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.step-detail__facts dd,
+.step-detail__check dd {
+  margin: 0;
+  color: #35353b;
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.step-detail__check {
+  margin-top: 9px;
+  padding: 9px 11px;
+  border: 1px solid rgba(0, 138, 87, 0.22);
+  border-radius: 9px;
+  background: #f4fbf7;
+}
+
+.step-detail__check > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--subtle);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.step-detail__check dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 0;
+}
+
+/* An excerpt is content read from a file. It is quoted, and visually distinct
+   from the assistant's own words, so injected instructions inside a document
+   can never be mistaken for agent output. */
+.step-detail__excerpt {
+  margin: 9px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--subtle);
+  border-radius: 9px;
+  background: #fafafa;
+}
+
+.step-detail__excerpt figcaption {
+  margin-bottom: 6px;
+  color: var(--subtle);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.step-detail__excerpt figcaption em {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.step-detail__excerpt blockquote {
+  margin: 0;
+  color: #35353b;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.step-detail__excerpt small {
+  display: block;
+  margin-top: 6px;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
 .composer-wrap {
   position: fixed;
   z-index: 6;
