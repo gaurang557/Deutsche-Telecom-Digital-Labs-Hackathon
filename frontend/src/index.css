@@ -2,25 +2,25 @@
   font-family:
     Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
-  color: #ececf1;
-  background: #171717;
+  color: #242428;
+  background: #f7f7f8;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #212121;
-  --sidebar: #171717;
-  --surface: #2b2b2b;
-  --surface-raised: #303030;
-  --surface-hover: #383838;
-  --border: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --text: #ececf1;
-  --muted: #a6a6ae;
-  --subtle: #777780;
-  --accent: #e20074;
-  --accent-bright: #f22988;
-  --success: #35b983;
-  --danger: #ef6a70;
-  color-scheme: dark;
+  --canvas: #ffffff;
+  --sidebar: #f7f7f8;
+  --surface: #f4f4f5;
+  --surface-raised: #f0f0f2;
+  --surface-hover: #e9e9ec;
+  --border: rgba(31, 31, 35, 0.1);
+  --border-strong: rgba(31, 31, 35, 0.17);
+  --text: #242428;
+  --muted: #686872;
+  --subtle: #90909a;
+  --accent: #d4006d;
+  --accent-bright: #e20074;
+  --success: #16835e;
+  --danger: #c83d48;
+  color-scheme: light;
 }
 
 * {
@@ -69,7 +69,7 @@ textarea:focus-visible {
   flex-direction: column;
   padding: 20px 14px 16px;
   background: var(--sidebar);
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid rgba(31, 31, 35, 0.08);
 }
 
 .brand {
@@ -154,7 +154,7 @@ textarea:focus-visible {
 
 .sidebar__item--active {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(31, 31, 35, 0.06);
 }
 
 .sidebar__glyph {
@@ -166,7 +166,8 @@ textarea:focus-visible {
   padding: 13px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 4px 16px rgba(31, 31, 35, 0.04);
 }
 
 .system-card__row {
@@ -215,7 +216,7 @@ textarea:focus-visible {
   justify-content: space-between;
   padding: 12px 28px;
   border-bottom: 1px solid var(--border);
-  background: rgba(33, 33, 33, 0.88);
+  background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(18px);
 }
 
@@ -282,7 +283,7 @@ textarea:focus-visible {
   background:
     radial-gradient(circle at 35% 25%, rgba(242, 41, 136, 0.38), transparent 55%),
     #2c2028;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 16px 50px rgba(81, 42, 62, 0.14);
 }
 
 .welcome__orb span {
@@ -371,8 +372,8 @@ textarea:focus-visible {
 .message__avatar {
   display: grid;
   place-items: center;
-  color: #d2d2d8;
-  background: #45454b;
+  color: #55555f;
+  background: #e4e4e8;
 }
 
 .message__content {
@@ -392,6 +393,25 @@ textarea:focus-visible {
   margin-top: 7px;
   color: var(--subtle);
   font-size: 10px;
+}
+
+.message--live .message__content {
+  min-width: min(560px, 75vw);
+}
+
+.message--live .message__content > p {
+  min-height: 24px;
+}
+
+.live-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  vertical-align: -0.12em;
+  animation: caret-blink 850ms steps(1) infinite;
 }
 
 .confidence--low {
@@ -427,7 +447,8 @@ textarea:focus-visible {
   margin-top: 18px;
   border: 1px solid var(--border);
   border-radius: 15px;
-  background: rgba(255, 255, 255, 0.028);
+  background: #ffffff;
+  box-shadow: 0 8px 30px rgba(31, 31, 35, 0.045);
   overflow: hidden;
 }
 
@@ -461,7 +482,7 @@ textarea:focus-visible {
 .review-badge {
   padding: 5px 8px;
   border-radius: 999px;
-  color: #87d9b4;
+  color: #116b4e;
   background: rgba(53, 185, 131, 0.11);
   font-size: 9px;
   font-weight: 650;
@@ -478,7 +499,7 @@ textarea:focus-visible {
   grid-template-columns: 26px minmax(0, 1fr);
   gap: 12px;
   padding: 15px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+  border-bottom: 1px solid rgba(31, 31, 35, 0.07);
 }
 
 .plan-steps li:last-child {
@@ -499,7 +520,7 @@ textarea:focus-visible {
 
 .plan-steps p {
   margin: 1px 0 0;
-  color: #dedee3;
+  color: #35353b;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -518,7 +539,7 @@ textarea:focus-visible {
   gap: 20px;
   padding: 14px 18px;
   border-top: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.12);
+  background: #fafafa;
 }
 
 .plan-card__footer p {
@@ -571,7 +592,7 @@ textarea:focus-visible {
 }
 
 .notice--error {
-  color: #ffc0c3;
+  color: #a82f39;
   border-color: rgba(239, 106, 112, 0.25);
   background: rgba(239, 106, 112, 0.08);
 }
@@ -603,7 +624,7 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color: #93e0bc;
+  color: #116b4e;
   background: rgba(53, 185, 131, 0.13);
   font-size: 10px;
 }
@@ -632,7 +653,7 @@ textarea:focus-visible {
 .result-card li p {
   grid-column: 1 / -1;
   margin: 0;
-  color: #f09da1;
+  color: #b63742;
   line-height: 1.45;
 }
 
@@ -653,13 +674,14 @@ textarea:focus-visible {
   border: 1px solid var(--border-strong);
   border-radius: 20px;
   background: var(--surface);
-  box-shadow: 0 14px 42px rgba(0, 0, 0, 0.28);
+  background: #ffffff;
+  box-shadow: 0 14px 42px rgba(31, 31, 35, 0.13);
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .composer:focus-within {
-  border-color: rgba(255, 255, 255, 0.24);
-  box-shadow: 0 16px 46px rgba(0, 0, 0, 0.34);
+  border-color: rgba(31, 31, 35, 0.25);
+  box-shadow: 0 16px 46px rgba(31, 31, 35, 0.17);
 }
 
 .composer textarea {
@@ -698,7 +720,7 @@ textarea:focus-visible {
 }
 
 .capture-status--recording {
-  color: #ff79a9;
+  color: var(--accent);
 }
 
 .voice-button,
@@ -714,11 +736,11 @@ textarea:focus-visible {
 }
 
 .voice-button {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(31, 31, 35, 0.07);
 }
 
 .voice-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(31, 31, 35, 0.12);
 }
 
 .voice-button--recording {
@@ -749,14 +771,15 @@ textarea:focus-visible {
 
 .send-button {
   background: var(--text);
-  color: #212121;
+  color: #ffffff;
+  background: #242428;
   font-size: 17px;
   font-weight: 750;
 }
 
 .send-button:hover:not(:disabled) {
   transform: translateY(-1px);
-  background: white;
+  background: #000000;
 }
 
 .voice-button:disabled,
@@ -773,7 +796,7 @@ textarea:focus-visible {
 
 .composer-error {
   margin: 8px 0 0;
-  color: #f29da1;
+  color: var(--danger);
 }
 
 .composer-note {
@@ -818,6 +841,17 @@ textarea:focus-visible {
   }
   50% {
     box-shadow: 0 0 0 7px rgba(226, 0, 116, 0);
+  }
+}
+
+@keyframes caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
   }
 }
 

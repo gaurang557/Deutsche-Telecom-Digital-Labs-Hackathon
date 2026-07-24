@@ -1,4 +1,4 @@
-# Voice Agent — Frontend
+# Voice desk — Frontend
 
 Minimal Vite + React + TypeScript UI for the local voice-controlled agent.
 

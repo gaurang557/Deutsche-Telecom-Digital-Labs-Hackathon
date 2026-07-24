@@ -1,4 +1,4 @@
-# Voice-Controlled Desktop Agent
+# Voice desk
 
 FastAPI backend for a local voice-controlled agent that performs desktop
 operations.

@@ -53,7 +53,15 @@ export default function App() {
   const [executionResult, setExecutionResult] =
     useState<PlanExecutionResponse | null>(null);
   const [executionError, setExecutionError] = useState<string | null>(null);
-  const { status, result, error, start, stop } = useVoiceCapture();
+  const {
+    status,
+    result,
+    error,
+    liveTranscript,
+    liveSupported,
+    start,
+    stop,
+  } = useVoiceCapture();
 
   const recording = status === "recording";
   const captureBusy = status === "requesting" || status === "transcribing";
@@ -137,18 +145,28 @@ export default function App() {
     setDraft("");
   };
 
+  const beginVoiceRequest = () => {
+    resetConversation();
+    void start();
+  };
+
   const lowConfidence =
     activeRequest?.confidence != null &&
     activeRequest.confidence < LOW_CONFIDENCE;
   const hasConversation =
-    activeRequest || planning || planningResult || planningError;
+    activeRequest ||
+    recording ||
+    status === "transcribing" ||
+    planning ||
+    planningResult ||
+    planningError;
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand__mark">A</span>
-          <span>Aura Desktop</span>
+          <span className="brand__mark">V</span>
+          <span>Voice desk</span>
         </div>
 
         <button className="new-task" type="button" onClick={resetConversation}>
@@ -160,7 +178,7 @@ export default function App() {
           <p className="sidebar__label">Workspace</p>
           <div className="sidebar__item sidebar__item--active">
             <span className="sidebar__glyph" aria-hidden="true">⌁</span>
-            Desktop assistant
+            Voice desk
           </div>
         </div>
 
@@ -183,12 +201,12 @@ export default function App() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">LOCAL AI AGENT</p>
-            <h1>Desktop assistant</h1>
+            <p className="eyebrow">VOICE-CONTROLLED AGENT</p>
+            <h1>Voice desk</h1>
           </div>
           <div className="privacy-pill">
             <span aria-hidden="true">◆</span>
-            Private &amp; on-device
+            Local-first workspace
           </div>
         </header>
 
@@ -244,9 +262,27 @@ export default function App() {
             </article>
           )}
 
+          {(recording || status === "transcribing") && (
+            <article className="message message--user message--live">
+              <div className="message__avatar">You</div>
+              <div className="message__content">
+                <p>
+                  {liveTranscript ||
+                    (liveSupported
+                      ? "Listening…"
+                      : "Listening — your words will appear when you release.")}
+                  {recording && <span className="live-caret" aria-hidden="true" />}
+                </p>
+                <span>
+                  {recording ? "Live voice transcript" : "Finishing transcript…"}
+                </span>
+              </div>
+            </article>
+          )}
+
           {planning && (
             <article className="message message--assistant">
-              <div className="assistant-avatar">A</div>
+              <div className="assistant-avatar">V</div>
               <div className="message__content">
                 <div className="thinking">
                   <span />
@@ -260,7 +296,7 @@ export default function App() {
 
           {planningError && (
             <article className="message message--assistant">
-              <div className="assistant-avatar">A</div>
+              <div className="assistant-avatar">V</div>
               <div className="message__content">
                 <p>I ran into a problem while preparing your plan.</p>
                 <div className="notice notice--error">{planningError}</div>
@@ -270,7 +306,7 @@ export default function App() {
 
           {planningResult?.control_intent && (
             <article className="message message--assistant">
-              <div className="assistant-avatar">A</div>
+              <div className="assistant-avatar">V</div>
               <div className="message__content">
                 <p>
                   Understood — I’ll {planningResult.control_intent} the current
@@ -282,7 +318,7 @@ export default function App() {
 
           {planningResult?.plan && (
             <article className="message message--assistant">
-              <div className="assistant-avatar">A</div>
+              <div className="assistant-avatar">V</div>
               <div className="message__content">
                 <p>{planningResult.plan.summary}</p>
 
@@ -348,7 +384,7 @@ export default function App() {
 
           {executionError && (
             <article className="message message--assistant">
-              <div className="assistant-avatar">A</div>
+              <div className="assistant-avatar">V</div>
               <div className="message__content">
                 <p>I couldn’t start the task.</p>
                 <div className="notice notice--error">{executionError}</div>
@@ -358,7 +394,7 @@ export default function App() {
 
           {executionResult && (
             <article className="message message--assistant">
-              <div className="assistant-avatar">A</div>
+              <div className="assistant-avatar">V</div>
               <div className="message__content">
                 <p>{friendlyExecutionMessage(executionResult)}</p>
                 <div
@@ -396,7 +432,7 @@ export default function App() {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder="Ask Aura to do something on your desktop…"
+              placeholder="Ask Voice desk to do something on your desktop…"
               rows={1}
               disabled={appBusy}
               aria-label="Task request"
@@ -410,7 +446,7 @@ export default function App() {
                 type="button"
                 onPointerDown={(event) => {
                   event.preventDefault();
-                  void start();
+                  beginVoiceRequest();
                 }}
                 onPointerUp={stop}
                 onPointerLeave={() => {
@@ -434,7 +470,7 @@ export default function App() {
           </form>
           {error && <p className="composer-error">{error}</p>}
           <p className="composer-note">
-            Aura can make mistakes. Review plans before execution.
+            Voice desk can make mistakes. Review plans before execution.
           </p>
         </div>
       </main>
