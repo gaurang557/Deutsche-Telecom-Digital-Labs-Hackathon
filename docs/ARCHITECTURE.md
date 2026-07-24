@@ -5,8 +5,9 @@ each decision. It addresses every topic required by the deliverable. Where a
 capability is not yet implemented, it is marked **[Planned]** and the design is
 described so the intent is clear and reviewable.
 
-Legend: **[Implemented]** = code exists today (through Milestone 7). **[Planned]** =
-designed, lands in a later milestone.
+Legend: **[Implemented]** = code exists today (M0–M7, plus this module's safety
+core **M12**; M8–M11 remain planned or team-owned). **[Planned]** = designed,
+lands in a later milestone.
 
 ---
 
@@ -198,43 +199,96 @@ text are always **untrusted data**.
 - Because authorization is bound to a specific action (see §7), an interruption
   or change invalidates any pending confirmation.
 
-## 7. Permission and safety model (the core)  **[Structural gateway implemented; deterministic policy planned — M12]**
+## 7. Permission and safety model (the core)  **[Implemented — M12]**
 
-- M12 is mandatory work owned by this execution/safety module, not by the LLM:
-  **M12A** implements deterministic risk classification and rules, **M12B**
-  validates confirmation tokens bound to the exact `action_hash`, and **M12C**
-  integrates the real policy with the dispatcher and adds fail-closed tests.
-  The LLM may explain a `PolicyDecision` and collect a user's response; it
-  cannot classify risk, authorize an action, or validate confirmation.
-- **Deterministic risk classification** into fixed classes (aligned with the
-  shared team `RiskLevel` vocabulary, plus our `FORBIDDEN`):
-  `NONE`, `LOW`, `MEDIUM`, `HIGH`, `CONSEQUENTIAL`, `FORBIDDEN`. Computed by pure
-  code from the action type/target/parameters — **the LLM never sets risk; it
-  only ingests the value our policy assigns** (surfaced on `PolicyDecision.risk_level`).
+This is the deterministic safety core owned by this module, now implemented in
+`policy/deterministic.py` (`DeterministicPolicy`), `policy/confirmation.py`
+(`action_hash` + `ConfirmationStore`), and the dispatcher's policy gate
+(`execution/dispatcher.py`). The mock `AllowAllPolicy`/`ConfigurablePolicy` are
+retained for wiring and existing tests. The LLM may explain a `PolicyDecision`
+and relay a user's response; it cannot classify risk, authorize an action, or
+validate a confirmation.
+
+- **Deterministic risk classification. [Implemented — M12]** Risk is computed by
+  pure code (`classify_risk`) from the action's `type` + `parameters`
+  **alone** — never by the LLM, and never from live disk state or (untrusted)
+  file/evidence content. Identical inputs always produce identical outputs: a
+  read is `NONE` no matter how alarming the target/content looks, and a delete is
+  `HIGH` even if a parameter claims it is "safe". Classes (the shared team
+  `RiskLevel` vocabulary, plus our `FORBIDDEN`): `NONE`, `LOW`, `MEDIUM`, `HIGH`,
+  `CONSEQUENTIAL`, `FORBIDDEN` — surfaced on `PolicyDecision.risk_level`.
   - NONE: read-only, no side effects (pdf/spreadsheet read, list files,
-    `file.exists`/`file.list`/`file.read_text`, inspect controls).
-  - LOW: local and reversible (type into an unsaved draft).
-  - MEDIUM: creates local state (`file.copy`, `file.write_text`, `file.mkdir`, save new file).
-  - HIGH: destructive but local (`file.move`, `file.delete`, overwrite original,
-    bulk rename) → **requires confirmation**.
+    `file.exists`/`file.list`/`file.read_text`).
+  - LOW: local and reversible (reserved in the vocabulary; no action classifies
+    here today).
+  - MEDIUM: creates new local state (`file.mkdir`; `file.write_text`/`file.copy`/
+    `spreadsheet.write_cell` without `overwrite`; `document`/`presentation.replace_text`
+    with `save_as`) → **allowed but logged**.
+  - HIGH: destructive but local (overwrite in place; `file.move`; `file.delete`)
+    → **requires confirmation**.
   - CONSEQUENTIAL: leaves the machine (send, submit, publish, purchase) →
     **requires confirmation immediately before execution**.
-  - FORBIDDEN: arbitrary shell / PowerShell / CMD / registry / software install /
+  - FORBIDDEN: arbitrary shell / PowerShell / CMD / registry / `code.eval` /
     any command sourced from a webpage/document/PDF → **always denied**.
+  - Unrecognised types fail safe to a `HIGH` floor routed to **CLARIFY**, so a
+    future/unknown type is never silently treated as low-risk.
+- **Four outcomes, each with a stable `rule_id`. [Implemented — M12]** Every
+  decision maps to exactly one `PolicyOutcome` plus a stable, descriptive
+  `rule_id` (asserted by tests and recorded in the audit log) and a
+  human-readable `reason`:
+
+  | Risk | Outcome | `rule_id` |
+  |------|---------|-----------|
+  | NONE | ALLOW | `R-READ-ALLOW` |
+  | MEDIUM | ALLOW (logged) | `R-CREATE-ALLOW` |
+  | HIGH | CONFIRM | `R-OVERWRITE-CONFIRM` / `R-MOVE-CONFIRM` / `R-DELETE-CONFIRM` |
+  | CONSEQUENTIAL | CONFIRM | `R-CONSEQUENTIAL-CONFIRM` |
+  | FORBIDDEN | DENY | `R-FORBIDDEN-DENY` |
+  | (unrecognised) | CLARIFY | `R-UNKNOWN-CLARIFY` |
+
+- **Single-use, action-bound confirmation tokens — the anti-injection guarantee.
+  [Implemented — M12]** On a CONFIRM decision, `authorize()` mints a single-use,
+  TTL-bounded (default 300s) token via `ConfirmationStore`, keyed to
+  `action_hash(action)` — a canonical SHA-256 over the action's
+  `type`+`target`+**sorted** `parameters` (deliberately **ignoring**
+  `action_id`/`task_id`/`sequence`/`reason`). `validate(token, action)` succeeds
+  **only** if the token exists, is unused, is within its TTL, **and** the
+  re-derived `action_hash` matches — and only then does it burn the token. A
+  mismatch or expiry fails closed **without** consuming the token (so the
+  legitimate action can still be confirmed). The property this buys: **an
+  approval for action X can never authorize a mutated X′.** The classic
+  confused-deputy / prompt-injection attack — user approves "delete
+  `report.tmp`", attacker swaps in "delete `payroll.xlsx`" — is rejected on the
+  hash mismatch.
+- **Dispatcher gating. [Implemented — M12]** The dispatcher obeys the decision
+  and never self-authorizes. `dispatch(action, *, confirmation_token=None)`:
+  ALLOW → execute (+ verify); DENY/CLARIFY → the executor **never runs** (returns
+  `denied`/`clarify` with audit events); CONFIRM → the executor runs **only** if
+  a valid single-use token bound to *that exact action* is supplied (emitting
+  `confirmation_accepted`), otherwise it returns `needs_confirmation` with a
+  freshly-minted token, `rule_id`, `risk_level`, and `reason` (emitting
+  `confirmation_rejected` first if a bad token was presented, then
+  `policy_confirmation_required`). Omitting the token preserves the original
+  behaviour, so the ALLOW path and all existing callers are unaffected.
 - **`PolicyDecision`** carries `outcome` (allow/deny/confirm/clarify),
   `risk_level`, a stable `rule_id`, a human-readable `reason`, an optional
-  `confirmation_token`, and an `action_hash`.
-- **Confirmation is bound to the exact action** via `action_hash`. Changing the
-  action's type, target, or parameters invalidates the prior confirmation, so a
-  user can never approve one thing and have another executed.
-- **Structural enforcement today (M0):** `Action` uses `extra="forbid"`, so the
-  planner/LLM cannot attach `risk`, `permission`, `trust`, `confirmation`, or
-  `authorization`. The authority literally has nowhere to live except the
-  deterministic Policy Engine. Unknown actions and executor exceptions
-  **fail closed** (a structured `FAILED` result, never an unhandled crash).
-- **Prompt-injection resistance:** retrieved content is data. An
-  `UNTRUSTED_CONTENT_DETECTED` audit event is emitted when injection-like text
-  is seen, but such content can never change an authorization outcome.
+  `confirmation_token` (only for CONFIRM), and an `action_hash`.
+- **"LLM proposes, deterministic code authorizes." [Implemented — M12]** The LLM
+  can only *propose* an `Action`; it cannot set risk or grant permission because
+  the `Action` schema uses `extra="forbid"` (there is nowhere for authority to
+  live) and the policy computes risk from the action alone.
+- **"Same inputs → same decision." [Implemented — M12]** The decision fields
+  (outcome / risk / `rule_id` / `reason` / `action_hash`) are a pure function of
+  the action; only the `confirmation_token` and `decision_id` are per-call
+  nonces. Safety is therefore reproducible, explainable (`rule_id` + `reason`),
+  and testable.
+- **Structural enforcement (M0, retained):** `Action` uses `extra="forbid"`, so
+  the planner/LLM cannot attach `risk`, `permission`, `trust`, `confirmation`, or
+  `authorization`. Unknown actions and executor exceptions **fail closed** (a
+  structured result, never an unhandled crash).
+- **Prompt-injection resistance:** retrieved content is data, never authority; it
+  can never change an authorization outcome. (An `UNTRUSTED_CONTENT_DETECTED`
+  audit event is reserved in the vocabulary for flagging injection-like text.)
 
 ## 8. Audit  **[Action-level emission implemented; M11 externally owned]**
 

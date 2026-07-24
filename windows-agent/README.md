@@ -37,7 +37,7 @@ and testing are not scheduled.
 | M9 | Windows UI Automation adapter | planned |
 | M10 | Browser executor | planned |
 | M11 | Shared audit implementation | external/team-owned; this module supplies action events and integration/E2E tests |
-| M12 | Deterministic policy, risk, and confirmation | mandatory work in this execution/safety module |
+| M12 | Deterministic policy, risk, and confirmation | ✅ done |
 | M13 | Pause/resume/cancel/correction integration | planned |
 | M14 | Planner/LLM integration, including deferred M5/M8 orchestration | planned |
 | M15 | End-to-end regression | planned |
@@ -45,9 +45,12 @@ and testing are not scheduled.
 | M17 | Cross-platform/macOS readiness | removed from active roadmap |
 | M18 | Release/demo freeze | planned |
 
-M0–M4, M6, and M7 code exist today. Desktop, browser, planner/LLM, voice, full
-state orchestration, and shared-audit integration remain planned or externally
-owned as shown above.
+M0–M4, M6, M7, and the **M12** deterministic policy + confirmation engine exist
+today — so a proposed action is now deterministically classified and authorized,
+and consequential actions are gated behind a single-use, action-bound
+confirmation token. Desktop, browser, planner/LLM, voice, full state
+orchestration, and shared-audit integration remain planned or externally owned as
+shown above.
 
 ---
 
@@ -126,15 +129,25 @@ pytest.ini
 
 ```
 Action (Pydantic-validated)
-   └─> Dispatcher.dispatch(action)          # single entry point (async)
+   └─> Dispatcher.dispatch(action, *, confirmation_token=None)   # single entry point (async)
          ├─ registry.get(action.type)       # unknown type -> safe FAILED result
+         ├─ policy.authorize(action)        # deterministic PolicyDecision (M12)
+         │     DENY / CLARIFY -> short-circuit; executor NOT called
+         │     CONFIRM        -> needs_confirmation, unless a valid single-use
+         │                       token bound to THIS action is supplied
+         │     ALLOW          -> continue
          ├─ await executor.execute(action)  # returns ExecutorResult (internal)
+         ├─ verify (modifying actions)      # independent re-observation (M2+)
          ├─ bound evidence                  # cap sizes; never leak whole files
          └─> ActionResult (to planner)      # status + bounded evidence + error
+   (structured audit events are emitted around every stage)
 ```
 
-Reserved (added in later milestones, in this exact spot):
-`validate → [policy authorize] → [confirmation] → execute → [verification] → [audit]`.
+The safety stages are wired into this single path so they can never be bypassed:
+deterministic **policy + confirmation** (M12), independent **verification** for
+modifying actions (M2+), and **audit** emission around every stage. The
+planner/LLM, voice, and desktop/browser layers connect to this same entry point
+in later milestones.
 
 See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for the full design and the
 reasoning behind each decision.

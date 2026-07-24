@@ -5,6 +5,124 @@ single milestone commit contains, so it can double as the commit body.
 
 ---
 
+## Milestone 12 — Deterministic Policy + Confirmation
+
+**Summary:** Replaced the mock authorization with the real **deterministic safety
+core** for this module: `DeterministicPolicy` classifies every action's risk
+purely from its `type` + `parameters` (never from the LLM, live disk state, or
+untrusted file/evidence content), maps it to one of four outcomes with a stable,
+descriptive `rule_id`, and — for consequential actions — mints a **single-use,
+TTL-bounded, action-bound confirmation token** that the dispatcher gates on. The
+same action always yields the same decision. The `AllowAllPolicy`/
+`ConfigurablePolicy` mocks are **retained** for wiring and existing tests, and the
+ALLOW path is unchanged, so the prior suite stays green.
+
+**Risk → outcome → `rule_id`** (verified in `tests/test_policy.py`):
+
+| Risk | Outcome | `rule_id` | Applies to |
+|------|---------|-----------|------------|
+| `NONE` | ALLOW | `R-READ-ALLOW` | all read-only `file.*`/`pdf.*`/`spreadsheet.*`/`document.*`/`presentation.*` reads |
+| `MEDIUM` | ALLOW (logged) | `R-CREATE-ALLOW` | `file.mkdir`; `file.write_text`/`file.copy`/`spreadsheet.write_cell` without `overwrite`; `document`/`presentation.replace_text` with `save_as` |
+| `HIGH` | CONFIRM | `R-OVERWRITE-CONFIRM` | overwrite in place (`overwrite: true`; or `replace_text` without `save_as`) |
+| `HIGH` | CONFIRM | `R-MOVE-CONFIRM` | `file.move` |
+| `HIGH` | CONFIRM | `R-DELETE-CONFIRM` | `file.delete` |
+| `CONSEQUENTIAL` | CONFIRM | `R-CONSEQUENTIAL-CONFIRM` | leaves the machine — `send`/`submit`/`publish`/`purchase`/`post` verbs + explicit type map (forward-looking; no such executor in the frozen catalogue yet) |
+| `FORBIDDEN` | DENY | `R-FORBIDDEN-DENY` | `shell.exec`, `registry.write`, `code.eval`, … |
+| `HIGH` (floor) | CLARIFY | `R-UNKNOWN-CLARIFY` | any unrecognised action `type` (fails safe) |
+
+**Confirmation / anti-injection design:** `action_hash(action)` is a canonical
+SHA-256 over the action's `type` + `target` + **sorted** `parameters` (it
+deliberately **ignores** `action_id`/`task_id`/`sequence`/`reason`, which may
+legitimately differ between the proposal and the confirmed re-dispatch). On a
+CONFIRM decision `authorize()` mints a random single-use token bound to that hash
+with a created-at timestamp and a TTL (default **300s**). `validate(token,
+action)` returns `True` **only** if the token exists, is unused, is within TTL,
+**and** the re-derived `action_hash` matches — and then it burns the token; a
+mismatch or expiry fails closed **without** consuming it (so the legitimate action
+can still be confirmed). This is the anti-injection property: **an approval for
+action X can never authorize a mutated X′** (approve "delete `report.tmp`",
+attacker swaps in "delete `payroll.xlsx`" → rejected on the hash mismatch). The
+LLM never sets risk/authority — `Action` keeps `extra="forbid"`, so authority has
+nowhere to live and the policy computes risk from the action alone.
+
+**Added**
+- `policy/deterministic.py` — `DeterministicPolicy` (owns one `ConfirmationStore`
+  per instance) plus the pure `classify_risk(action)` function and an internal
+  `_classify` that consults, in order, the frozen read/create/overwrite/move/
+  delete catalogue, then forward-looking `_FORBIDDEN_TYPES` and consequential
+  type/verb maps, then a fail-safe CLARIFY. Canonical `_Rule` instances hold the
+  `(risk_level, outcome, rule_id, reason)` for each class. `authorize()` returns a
+  `PolicyDecision` whose safety fields are a pure function of the action and which
+  mints a `confirmation_token` only on CONFIRM; `validate_confirmation()`
+  delegates to the store.
+- `policy/confirmation.py` — `action_hash()` (canonical SHA-256 fingerprint),
+  `ConfirmationStore` (single-use, TTL-bounded, action-bound tokens; injectable
+  `clock` defaulting to `time.monotonic`; `mint`/`validate`/`is_used`/
+  `is_expired`), and `DEFAULT_TTL_SECONDS = 300.0`.
+- `tests/test_policy.py` — risk/outcome/`rule_id` for every family (reads, create,
+  overwrite-in-place, move, delete, consequential, forbidden, unknown), determinism
+  + `rule_id` stability, `classify_risk` matching `authorize`, and the content-
+  independence / injection cases (a scary-looking read is still ALLOW; a delete
+  stays CONFIRM despite "safe" hints; classification never touches the filesystem;
+  a token is bound to its action and not reusable across actions; `action_hash`
+  ignores non-identity fields).
+- `tests/test_confirmation.py` — `action_hash` determinism/key-order independence
+  and sensitivity to type/target/params; store happy path, single-use burn,
+  expiry, within-TTL validity, the mutated-action defense (fails without burning
+  the token), and unknown-token rejection.
+- `tests/test_policy_pipeline.py` — end-to-end through the real
+  `ActionRegistry`+`Dispatcher`+`DeterministicPolicy`+verifiers+audit sink on the
+  live filesystem: a read ALLOWs and executes; a delete/overwrite is blocked
+  (`needs_confirmation`) and does **not** run; a valid single-use token re-dispatch
+  executes and verifies; a reused or mismatched token never executes (and emits
+  `confirmation_rejected`); a forbidden action is DENIED and a made-up type
+  CLARIFIES, neither executing, both audited.
+- `tools/manual_policy_test.py` — interactive harness wiring the real pipeline;
+  shows the decision (outcome/`rule_id`/risk/reason), status, bounded evidence, the
+  minted single-use token, verification, and the audit trail. `confirm` re-submits
+  the last blocked action with its token; `tamper` presents the same token against a
+  mutated action to demonstrate the anti-injection rejection.
+
+**Changed**
+- `policy/base.py` — added a `validate_confirmation(token, action)` seam defaulting
+  to `False` (fail-closed), so mocks and any future policy without a confirmation
+  store never auto-proceed on a CONFIRM decision.
+- `policy/mock.py` — `action_hash` now re-exported from `policy/confirmation.py`
+  (single source of truth); `AllowAllPolicy`/`ConfigurablePolicy` retained.
+- `policy/__init__.py` — export `DeterministicPolicy`, `classify_risk`,
+  `ConfirmationStore`, `action_hash`, `DEFAULT_TTL_SECONDS`.
+- `execution/dispatcher.py` — `dispatch(action, context=None, *,
+  confirmation_token=None)`; the policy gate now honours the **real** decision:
+  ALLOW proceeds; DENY/CLARIFY short-circuit without executing; CONFIRM executes
+  only when a valid single-use token bound to the exact action is supplied
+  (emitting `confirmation_accepted`), else returns `needs_confirmation` carrying a
+  fresh `confirmation_token`/`action_hash`/`rule_id`/`risk_level` (emitting
+  `confirmation_rejected` for a bad token, then `policy_confirmation_required`).
+  Omitting the token preserves the original ALLOW-path behaviour.
+- `docs/ACTION_REFERENCE.md` — new **§3 Policy and confirmation** (risk→outcome→
+  `rule_id` table, per-outcome meaning, the two-call confirmation handshake);
+  sections renumbered accordingly; risk legend + status note updated to M12; the
+  frozen 26-action catalogue is unchanged.
+- `docs/ARCHITECTURE.md` — **§7 Permission and safety model** rewritten and marked
+  **[Implemented — M12]** (deterministic classification, four outcomes with stable
+  `rule_id`s, single-use action-bound tokens + the anti-injection guarantee,
+  dispatcher gating, and how this satisfies "LLM proposes, deterministic code
+  authorizes" and "same inputs → same decision"); legend notes M12 without
+  implying M8–M11 are done.
+- `docs/WALKTHROUGH.md` — milestone map marks **M12 ✅** (names
+  `deterministic.py` + `confirmation.py` + dispatcher gating); test list adds
+  `test_policy.py`/`test_confirmation.py`/`test_policy_pipeline.py` and a
+  `manual_policy_test.py` note; suite count updated.
+- `README.md` — milestone table row **M12 → ✅ done** and the status summary notes
+  the deterministic policy + confirmation gate now exist.
+- `docs/QUIZ_NOTES.md` — added a permission & safety Q&A deep-dive and refreshed the
+  stale "M0 only" honesty caveat.
+
+**Tests:** `pytest -q` → **259 passed** (186 baseline + 73 new). No new pip
+dependencies (the policy engine is pure stdlib).
+
+---
+
 ## Milestone 7 — Presentation (PowerPoint) Executor + replace_text verifier
 
 **Summary:** Added the `.pptx` presentation capability — four read-only

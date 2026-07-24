@@ -44,7 +44,8 @@ Action (or dict)
    ├─ registry lookup ........... registry.get_action_handler(); unknown → FAILED(UNKNOWN_ACTION)
    ├─ policy gateway ............ policy.authorize(action) → PolicyDecision
    │     DENY    → DENIED               (executor NOT called)
-   │     CONFIRM → NEEDS_CONFIRMATION   (executor NOT called)
+   │     CONFIRM → NEEDS_CONFIRMATION   (executor NOT called; a valid single-use
+   │                                     token on re-dispatch proceeds — M12)
    │     CLARIFY → CLARIFY              (executor NOT called)
    │     ALLOW   → continue
    ├─ execute ................... execute_authorized_action() → ExecutorResult (exceptions contained)
@@ -91,7 +92,7 @@ decision. See the guards in `execution/dispatcher.py`.
 | M9 | Windows desktop adapter (UI Automation) | planned |
 | M10 | browser executor (Playwright) | planned |
 | M11 | shared audit implementation | external/team-owned; this module guarantees action events + sink/query compatibility and tests the integrated boundary |
-| M12 | deterministic policy, risk, and confirmation binding | planned in this execution/safety module |
+| M12 | deterministic policy (`policy/deterministic.py`) + single-use, action-bound confirmation tokens (`policy/confirmation.py`) + dispatcher confirmation gating (`execution/dispatcher.py`) | ✅ |
 | M13 | pause/resume/cancel/correction integration | planned |
 | M14 | planner/LLM tool integration, including deferred M5/M8 orchestration | planned |
 | M15 | end-to-end regression | planned |
@@ -114,11 +115,16 @@ milestones: `test_contracts.py`, `test_dispatcher.py` (M0); `test_registry.py`,
 `test_pdf_ops.py` (M3 — read-only `pdf.*` executor, unit + end-to-end);
 `test_spreadsheet_ops.py` (M4 — `spreadsheet.*` executor + write verifier, unit + end-to-end);
 `test_document_ops.py` (M6 — `document.*` executor + replace_text verifier, unit + end-to-end);
-`test_presentation_ops.py` (M7 — `presentation.*` executor + replace_text verifier, unit + end-to-end).
+`test_presentation_ops.py` (M7 — `presentation.*` executor + replace_text verifier, unit + end-to-end);
+`test_policy.py` + `test_confirmation.py` + `test_policy_pipeline.py` (M12 —
+`DeterministicPolicy` risk/outcome/`rule_id` classification, single-use
+action-bound confirmation tokens, and end-to-end dispatcher gating).
 Manual testers live in `tools/manual_<domain>_test.py` (e.g.
-`tools/manual_presentation_test.py` for M7), each driving the full pipeline
-against a gitignored `sandbox/`.
-Current suite: **186 passed**.
+`tools/manual_presentation_test.py` for M7, and `tools/manual_policy_test.py`
+for M12 — a `file.delete` stays `needs_confirmation` until a valid single-use
+token is supplied, and `tamper` shows a mutated action being rejected), each
+driving the full pipeline against a gitignored `sandbox/`.
+Current suite: **259 passed**.
 
 ## 7. Related docs
 

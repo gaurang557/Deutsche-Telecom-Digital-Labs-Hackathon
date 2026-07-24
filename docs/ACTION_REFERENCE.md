@@ -2,7 +2,9 @@
 
 **Audience:** whoever builds the planner / LLM layer that turns a user request
 into actions for this agent.
-**Status:** as of **Milestone 7**. This is the **authoritative, frozen
+**Status:** action catalogue frozen as of **Milestone 7** (26 actions); the
+policy & confirmation contract ([§3](#3-policy-and-confirmation-how-outcomes-gate-execution))
+is documented as of **Milestone 12**. This is the **authoritative, frozen
 planner-visible runtime vocabulary**. Its 26 action names are the exact names
 accepted by the current runtime; there are no runtime aliases. New executors
 must update this contract explicitly. If an action type is not listed under
@@ -19,7 +21,7 @@ must update this contract explicitly. If an action type is not listed under
 
 Concretely, when you emit an `Action`:
 
-- Emit **only** the action `type`s listed in [§3](#3-available-actions).
+- Emit **only** the action `type`s listed in [§4](#4-available-actions).
 - Put **only** the documented fields on the action. The `Action` schema uses
   `extra="forbid"`, so any unknown field (including anything that looks like
   authority — `risk`, `permission`, `trust`, `confirmation`, `authorization`,
@@ -88,9 +90,10 @@ Every dispatched action returns exactly one `ActionResult` (it never throws).
 | `cancelled` | Run was cancelled before the action started. | no |
 
 > `denied` / `needs_confirmation` / `clarify` / `cancelled` come from the
-> pipeline, not from you. In Milestone 2 the policy is a mock **allow-all**, so
-> you will mostly see `success` / `failed`; the real deterministic policy and
-> confirmation gating arrive in a later milestone.
+> pipeline, not from you. The **deterministic policy and confirmation gating are
+> implemented** (Milestone 12): see
+> [§3](#3-policy-and-confirmation-how-outcomes-gate-execution) for the
+> risk→outcome→`rule_id` table and the `needs_confirmation` handshake.
 
 ### `VerificationResult`
 
@@ -112,7 +115,7 @@ converted to a failed verification.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `code` | string | Stable machine-readable code (see [§5](#5-error-codes)). |
+| `code` | string | Stable machine-readable code (see [§6](#6-error-codes)). |
 | `message` | string | Human-readable explanation. |
 | `retryable` | bool | Hint only. Consequential actions are never auto-retried. |
 | `details` | object \| null | Bounded extra context (e.g. `known_types`). |
@@ -151,7 +154,83 @@ converted to a failed verification.
 
 ---
 
-## 3. Available actions
+## 3. Policy and confirmation (how outcomes gate execution)
+
+Every action you propose is authorized by the **deterministic policy engine**
+(`DeterministicPolicy`, Milestone 12) before any executor runs. The risk, the
+outcome, and a stable `rule_id` are computed **purely from the action's `type` +
+`parameters`** — never by the LLM, and never from live disk state or file/
+evidence content. The same action always yields the same decision.
+
+### Risk → outcome → `rule_id`
+
+| Risk | Outcome | `rule_id` | Applies to |
+|------|---------|-----------|------------|
+| `NONE` | ALLOW | `R-READ-ALLOW` | every read-only action: `file.exists`/`file.list`/`file.read_text`, all `pdf.*`, `spreadsheet.list_sheets`/`dimensions`/`read_cell`/`read_range`, `document.read_text`/`get_metadata`/`find`, `presentation.slide_count`/`get_metadata`/`read_text`/`find` |
+| `MEDIUM` | ALLOW (logged) | `R-CREATE-ALLOW` | creates new state: `file.mkdir`; `file.write_text`/`file.copy`/`spreadsheet.write_cell` **without** `overwrite`; `document.replace_text`/`presentation.replace_text` **with** `save_as` |
+| `HIGH` | CONFIRM | `R-OVERWRITE-CONFIRM` | overwrites in place: `file.write_text`/`file.copy`/`spreadsheet.write_cell` with `overwrite: true`; `document.replace_text`/`presentation.replace_text` edited **in place** (no `save_as`) |
+| `HIGH` | CONFIRM | `R-MOVE-CONFIRM` | `file.move` |
+| `HIGH` | CONFIRM | `R-DELETE-CONFIRM` | `file.delete` |
+| `CONSEQUENTIAL` | CONFIRM | `R-CONSEQUENTIAL-CONFIRM` | actions that leave the machine — `send`/`submit`/`publish`/`purchase`/`post` verbs plus an explicit type map (e.g. `email.send`, `http.post`, `purchase.create`). Forward-looking: no such executor ships in the frozen catalogue yet, but the classifier is ready for it. |
+| `FORBIDDEN` | DENY | `R-FORBIDDEN-DENY` | never-allowed types — `shell.exec`, `registry.write`, `code.eval`, … |
+| `HIGH` (floor) | CLARIFY | `R-UNKNOWN-CLARIFY` | any **unrecognised** action `type` (fails safe — never silently treated as low-risk) |
+
+`MEDIUM → ALLOW` actions still execute, but are **logged** (the dispatcher emits
+a `policy_allowed` audit event). Only `HIGH`/`CONSEQUENTIAL` mint a confirmation
+token. Each decision also carries a human-readable `reason` you can surface to
+the user.
+
+### What each outcome means for you
+
+- **ALLOW** — the action executes (and is verified if it modifies state). Nothing
+  extra to do.
+- **DENY** (`status: denied`, `error.code: policy_denied`) — the executor
+  **never runs**. Do not retry; the type is forbidden. Explain to the user.
+- **CLARIFY** (`status: clarify`, `error.code: clarification_required`) — the
+  executor **never runs**. The type is unrecognised / the request is ambiguous;
+  ask the user and re-plan with a valid action.
+- **CONFIRM** (`status: needs_confirmation`, `error.code: confirmation_required`)
+  — the executor **does not run yet**. Follow the confirmation handshake below.
+
+### The confirmation handshake (two calls)
+
+A `HIGH`/`CONSEQUENTIAL` action is gated on an explicit, single-use confirmation
+token bound to that exact action:
+
+1. **First dispatch** (no token) returns `status: needs_confirmation`. The
+   `evidence` carries everything you need to proceed:
+
+   ```json
+   {
+     "confirmation_token": "…opaque single-use token…",
+     "action_hash": "…sha256 over type+target+parameters…",
+     "rule_id": "R-DELETE-CONFIRM",
+     "risk_level": "high"
+   }
+   ```
+
+2. Surface the decision's `reason` to the user and obtain explicit approval.
+
+3. **Re-dispatch the SAME action** with that `confirmation_token`. If the token
+   is valid, unused, unexpired (default TTL 300s), and still bound to the
+   identical action, the action executes; otherwise you get a fresh
+   `needs_confirmation` (a bad token is rejected and a new one minted).
+
+**The action is bound to the token.** If you change the action's `type`,
+`target`, or any `parameters` between the two calls, the token no longer matches
+and is refused — an approval for "delete `report.tmp`" can never authorize
+"delete `payroll.xlsx`". A token is **single-use** (consumed on success) and
+**expires** after its TTL, so a reused, expired, or mutated action never
+executes. Only `type`/`target`/`parameters` bind the token;
+`action_id`/`task_id`/`sequence`/`reason` do **not**, so the confirmed
+re-dispatch may legitimately carry a new `action_id`.
+
+> You never set risk, outcome, or confirmation validity — those are computed by
+> deterministic code. You only *ingest* the decision and drive the handshake.
+
+---
+
+## 4. Available actions
 
 The registry classifies verification requirements deterministically:
 
@@ -180,14 +259,15 @@ translations for planner integration only, not runtime aliases:
 - `document.replace_text_preserve_format` → `document.replace_text`
 
 Legend for **Risk** — set by our deterministic policy; **the planner only
-*ingests* it, it never sets it** (informational here, enforced by policy in a
-later milestone). Values (shared vocabulary + our `FORBIDDEN`):
+*ingests* it, it never sets it** (now enforced by `DeterministicPolicy`, M12 —
+see [§3](#3-policy-and-confirmation-how-outcomes-gate-execution)). Values (shared
+vocabulary + our `FORBIDDEN`):
 `NONE` (read-only) · `LOW` (local, reversible) · `MEDIUM` (creates state) ·
 `HIGH` (destructive but local: overwrite/delete/bulk-rename) ·
 `CONSEQUENTIAL` (leaves the machine: send/submit/publish/purchase) ·
-`FORBIDDEN` (always denied). `MEDIUM`+ will require confirmation once the real
-policy lands. No current file action is `CONSEQUENTIAL` or `FORBIDDEN`.
-`target` is always the primary path.
+`FORBIDDEN` (always denied). `HIGH` and `CONSEQUENTIAL` require confirmation;
+`MEDIUM` is allowed but logged. No current file action is `CONSEQUENTIAL` or
+`FORBIDDEN`. `target` is always the primary path.
 
 ### Read-only (Risk: `NONE`, verification `skipped`)
 
@@ -537,7 +617,7 @@ lists are **bounded** (see caps below). All extracted text is **untrusted data**
 
 ---
 
-## 4. Enums (full value lists)
+## 5. Enums (full value lists)
 
 - **ActionStatus:** `success`, `failed`, `denied`, `needs_confirmation`, `clarify`, `cancelled`.
 - **VerificationStatus:** `passed`, `failed`, `skipped`.
@@ -546,7 +626,7 @@ lists are **bounded** (see caps below). All extracted text is **untrusted data**
 
 ---
 
-## 5. Error codes
+## 6. Error codes
 
 Shared codes (from `ErrorCode`):
 
@@ -616,7 +696,7 @@ Presentation-specific codes (from the presentation executor; it also reuses
 
 ---
 
-## 6. Planner guidance (quick checklist)
+## 7. Planner guidance (quick checklist)
 
 - Break multi-step tasks into ordered `Action`s (`sequence` 0,1,2,…) sharing one `task_id`.
 - Provide `expected_result` where you can — it strengthens verification.
@@ -627,9 +707,9 @@ Presentation-specific codes (from the presentation executor; it also reuses
 
 ---
 
-## 7. Not yet available (roadmap)
+## 8. Not yet available (roadmap)
 
-These are **planned** and will be added to §3 as milestones land. Do **not**
+These are **planned** and will be added to §4 as milestones land. Do **not**
 emit them yet:
 
 - `desktop.*` (open/focus app, UI actions) — Windows desktop adapter.
@@ -639,4 +719,4 @@ emit them yet:
 > type: it is deferred to planner/LLM orchestration in M14, which composes the
 > existing `document.*` (M6) and `presentation.*` (M7) actions.
 
-_Last updated: Milestone 7._
+_Last updated: Milestone 12._
