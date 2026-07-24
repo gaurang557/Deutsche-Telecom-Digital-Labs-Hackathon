@@ -101,7 +101,7 @@ class DesktopExecutor:
                 status=ActionStatus.SUCCEEDED,
                 evidence=evidence,
             )
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             return ActionResult(
                 action_id=action.action_id,
                 status=ActionStatus.FAILED,
@@ -111,6 +111,7 @@ class DesktopExecutor:
     def _dispatch(self, action: Action) -> dict[str, Any]:
         handlers = {
             ActionType.OPEN_APPLICATION: self._open_application,
+            ActionType.OPEN_FILE: self._open_file,
             ActionType.FOCUS_APPLICATION: self._focus_application,
             ActionType.CLICK_ELEMENT: self._click_element,
             ActionType.TYPE_TEXT: self._type_text,
@@ -134,7 +135,12 @@ class DesktopExecutor:
                 action.target.casefold(),
                 action.target,
             )
-            subprocess.run(["open", "-a", application], check=True)
+            subprocess.run(
+                ["open", "-a", application],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         elif system == "Windows":
             if not hasattr(os, "startfile"):
                 raise RuntimeError("Windows application launcher is unavailable")
@@ -146,6 +152,65 @@ class DesktopExecutor:
         else:
             raise RuntimeError(f"Desktop execution is unsupported on {system}")
         return {"application": application, "launched": True}
+
+    @staticmethod
+    def _open_file(action: Action) -> dict[str, Any]:
+        path = DesktopExecutor._resolve_file(action)
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.run(
+                ["open", str(path)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        elif system == "Windows":
+            if not hasattr(os, "startfile"):
+                raise RuntimeError("Windows file launcher is unavailable")
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        else:
+            raise RuntimeError(f"Desktop execution is unsupported on {system}")
+        return {"path": str(path), "opened": True}
+
+    @staticmethod
+    def _resolve_file(action: Action) -> Path:
+        target = action.target.strip()
+        known_folders = {
+            "desktop": Path.home() / "Desktop",
+            "documents": Path.home() / "Documents",
+            "downloads": Path.home() / "Downloads",
+        }
+        path = known_folders.get(target.casefold(), Path(target).expanduser())
+        if not path.is_absolute():
+            path = path.resolve()
+
+        if path.is_file():
+            return path
+        if not path.is_dir():
+            raise ValueError(f"File or folder does not exist: {path}")
+
+        selection = action.parameters.get("selection")
+        if selection != "latest":
+            raise ValueError(
+                "open_file target is a folder; selection must be 'latest'"
+            )
+
+        extension = action.parameters.get("extension")
+        if extension is not None and not isinstance(extension, str):
+            raise ValueError("open_file extension must be text")
+        if isinstance(extension, str) and extension and not extension.startswith("."):
+            extension = f".{extension}"
+
+        candidates = [
+            candidate
+            for candidate in path.iterdir()
+            if candidate.is_file()
+            and (not extension or candidate.suffix.casefold() == extension.casefold())
+        ]
+        if not candidates:
+            qualifier = f" with extension {extension}" if extension else ""
+            raise ValueError(f"No files found in {path}{qualifier}")
+        return max(candidates, key=lambda candidate: candidate.stat().st_mtime)
 
     @staticmethod
     def _focus_application(action: Action) -> dict[str, Any]:

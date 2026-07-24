@@ -19,6 +19,10 @@ Use only these action types: {", ".join(action.value for action in ActionType)}.
 Never emit shell commands, Python code, risk labels, confirmation decisions, or UUIDs.
 Use short unique step_key values and only depend on earlier step_key values.
 Describe an observable expected_result for every action.
+To open a document, use one open_file action; do not open or focus a viewer first.
+For "open the latest PDF in Downloads", use open_file with target "Downloads"
+and parameters {{"selection": "latest", "extension": ".pdf"}}.
+Use move_file only when the user explicitly asks to move or relocate a file.
 If required information is missing, do not invent sensitive destinations,
 recipients, filenames, or overwrite intent."""
 
@@ -67,4 +71,3 @@ class OllamaPlanner:
             raise InvalidPlannerResponseError(
                 "Ollama returned an invalid action plan"
             ) from exc
-

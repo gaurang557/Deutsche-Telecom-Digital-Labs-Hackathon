@@ -25,6 +25,7 @@ class ControlIntent(StrEnum):
 
 class ActionType(StrEnum):
     OPEN_APPLICATION = "open_application"
+    OPEN_FILE = "open_file"
     FOCUS_APPLICATION = "focus_application"
     CLICK_ELEMENT = "click_element"
     TYPE_TEXT = "type_text"
