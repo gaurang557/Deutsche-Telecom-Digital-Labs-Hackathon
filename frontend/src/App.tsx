@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useVoiceCapture } from "./useVoiceCapture";
 
 interface VoiceHealth {
   status: string;
@@ -6,45 +7,109 @@ interface VoiceHealth {
   model_loaded: boolean;
 }
 
-type Backend =
-  | { state: "loading" }
-  | { state: "ok"; health: VoiceHealth }
-  | { state: "error"; message: string };
+const LOW_CONFIDENCE = 0.5;
+
+const STATUS_LABEL: Record<string, string> = {
+  idle: "Hold the mic and speak",
+  requesting: "Allow microphone access…",
+  recording: "Listening…",
+  transcribing: "Transcribing…",
+  error: "Something went wrong",
+};
 
 export default function App() {
-  const [backend, setBackend] = useState<Backend>({ state: "loading" });
+  const [health, setHealth] = useState<VoiceHealth | null>(null);
+  const { status, result, error, start, stop } = useVoiceCapture();
+
+  const recording = status === "recording";
+  const busy = status === "requesting" || status === "transcribing";
 
   useEffect(() => {
     fetch("/api/v1/voice/health")
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json() as Promise<VoiceHealth>;
-      })
-      .then((health) => setBackend({ state: "ok", health }))
-      .catch((err) => setBackend({ state: "error", message: String(err) }));
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setHealth)
+      .catch(() => setHealth(null));
   }, []);
+
+  // Spacebar as an alternative push-to-talk trigger.
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code === "Space" && !e.repeat) {
+        e.preventDefault();
+        start();
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        e.preventDefault();
+        stop();
+      }
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, [start, stop]);
+
+  const lowConfidence =
+    result?.confidence != null && result.confidence < LOW_CONFIDENCE;
 
   return (
     <main className="app">
       <h1 className="title">Voice Agent</h1>
       <p className="subtitle">Local voice-controlled desktop agent</p>
 
-      <div className="status-card">
-        {backend.state === "loading" && (
-          <span className="status status--pending">Connecting to backend…</span>
-        )}
-        {backend.state === "error" && (
-          <span className="status status--error">
-            Backend unreachable — {backend.message}
-          </span>
-        )}
-        {backend.state === "ok" && (
-          <span className="status status--ok">
-            Backend {backend.health.status} · model {backend.health.model} ·{" "}
-            {backend.health.model_loaded ? "loaded" : "not loaded"}
-          </span>
-        )}
-      </div>
+      <button
+        className={`mic ${recording ? "mic--recording" : ""}`}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          start();
+        }}
+        onPointerUp={stop}
+        onPointerLeave={() => {
+          if (recording) stop();
+        }}
+        disabled={busy}
+        aria-label="Hold to talk"
+      >
+        <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"
+          />
+          <path
+            fill="currentColor"
+            d="M19 12a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 1 0 2 0v-2.08A7 7 0 0 0 19 12Z"
+          />
+        </svg>
+      </button>
+
+      <p className={`status status--${status}`}>{STATUS_LABEL[status]}</p>
+
+      {error && <p className="error">{error}</p>}
+
+      {result && (
+        <div className="transcript">
+          <p className="transcript__text">
+            {result.text ? `“${result.text}”` : "(no speech detected)"}
+          </p>
+          <p className="transcript__meta">
+            {result.confidence != null
+              ? `confidence ${(result.confidence * 100).toFixed(0)}%`
+              : "confidence —"}
+            {lowConfidence && " · low confidence, please repeat"}
+          </p>
+        </div>
+      )}
+
+      {health && (
+        <footer className="health">
+          backend {health.status} · model {health.model} ·{" "}
+          {health.model_loaded ? "loaded" : "not loaded"}
+        </footer>
+      )}
     </main>
   );
 }
