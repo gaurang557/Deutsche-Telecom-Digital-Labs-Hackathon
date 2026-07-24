@@ -1,7 +1,17 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.api.routes import router
 from app.config import get_settings
+from app.voice.stt import load_model
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm up the whisper model at startup so the first /transcribe is not slow.
+    load_model()
+    yield
 
 
 def create_app() -> FastAPI:
@@ -11,6 +21,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         debug=settings.debug,
         description="Local API for a voice-controlled desktop automation agent.",
+        lifespan=lifespan,
     )
     application.include_router(router, prefix="/api/v1")
 
