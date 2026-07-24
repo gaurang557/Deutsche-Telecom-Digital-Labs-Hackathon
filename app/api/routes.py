@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.api.voice_routes import router as voice_router
 from app.config import get_settings
 from app.planning.exceptions import (
     InvalidPlannerResponseError,
@@ -13,6 +14,7 @@ from app.planning.service import PlanningService
 from app.schemas import HealthResponse, PlanningResponse, TaskRequest
 
 router = APIRouter()
+router.include_router(voice_router)
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])

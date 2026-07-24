@@ -11,6 +11,15 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3.2"
     ollama_timeout_seconds: float = 60.0
 
+    # Speech-to-text (faster-whisper). Used from the STT chunk onward.
+    whisper_model: str = "base.en"
+    whisper_compute_type: str = "int8"
+    whisper_model_dir: str | None = None
+    warm_whisper_on_startup: bool = False
+
+    # Frontend origin(s) allowed to call the API (Vite dev server by default).
+    cors_origins: list[str] = ["http://localhost:5173"]
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="AGENT_",
