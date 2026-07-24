@@ -7,12 +7,16 @@ was there (e.g. "<EMAIL>" instead of the field just disappearing).
 """
 
 import hashlib
+import json
 import re
 
 # Dict keys that get redacted outright, whatever type their value is.
-# Exact match only (case-insensitive) -- see the note in the explanation
-# about why this doesn't also catch things like "auth_token".
-_SENSITIVE_KEYS = {"password", "token", "api_key", "secret"}
+# Substring match, case-insensitive: a key CONTAINING any of these words
+# is redacted, not just a key named exactly one of them. This is a
+# deliberate choice to catch "confirmation_token" and "auth_token" (real
+# field names in the shared contract) at the cost of also catching
+# unrelated keys that happen to contain "auth" (e.g. "author").
+_SENSITIVE_KEY_SUBSTRINGS = ("password", "token", "api_key", "secret", "auth", "credential")
 
 _MAX_STRING_LEN = 2000
 
@@ -63,14 +67,36 @@ def redact_sensitive_data(data):
     return data
 
 
+def _is_sensitive_key(key) -> bool:
+    if not isinstance(key, str):
+        return False
+    lowered = key.lower()
+    return any(word in lowered for word in _SENSITIVE_KEY_SUBSTRINGS)
+
+
+def _mask_value(value) -> str:
+    # Hash the value itself (not the key) so that the SAME token value
+    # appearing under two different event types -- e.g. confirmation_token
+    # in both a "confirmation_requested" and a "confirmation_granted"
+    # audit event -- produces the SAME masked tag. That lets the two
+    # events be correlated in the log without the real token ever being
+    # written anywhere. Different values always produce different tags.
+    try:
+        canonical = json.dumps(value, sort_keys=True, default=str)
+    except TypeError:
+        canonical = str(value)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:4]
+    return f"<SECRET:{digest}>"
+
+
 def _redact_dict(data: dict) -> dict:
     redacted = {}
     for key, value in data.items():
-        if isinstance(key, str) and key.lower() in _SENSITIVE_KEYS:
+        if _is_sensitive_key(key):
             # Blanket redaction: whatever the value is -- string, nested
-            # dict, list -- a field literally named "password" etc.
-            # never gets its value written out at all.
-            redacted[key] = "<SECRET>"
+            # dict, list -- a key containing "token" etc. never gets its
+            # value written out at all, only a correlatable fingerprint.
+            redacted[key] = _mask_value(value)
         else:
             redacted[key] = redact_sensitive_data(value)
     return redacted

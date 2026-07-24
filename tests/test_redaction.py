@@ -27,12 +27,38 @@ def test_indian_phone_number_is_masked():
 
 def test_sensitive_dict_keys_are_masked_regardless_of_value_type():
     data = {"password": "hunter2", "token": {"nested": "value"}, "api_key": None, "secret": 12345}
-    assert redact_sensitive_data(data) == {
-        "password": "<SECRET>",
-        "token": "<SECRET>",
-        "api_key": "<SECRET>",
-        "secret": "<SECRET>",
-    }
+    result = redact_sensitive_data(data)
+    for key in data:
+        assert result[key].startswith("<SECRET:")
+        assert result[key].endswith(">")
+
+
+def test_substring_key_match_catches_confirmation_token_and_auth_token():
+    # confirmation_token and auth_token are real field/parameter names in
+    # the shared contract; substring matching (not exact) is what catches
+    # them, since neither key is literally named "token".
+    data = {"confirmation_token": "tok-abc", "auth_token": "tok-def", "credential_store": "x"}
+    result = redact_sensitive_data(data)
+    assert result["confirmation_token"].startswith("<SECRET:")
+    assert result["auth_token"].startswith("<SECRET:")
+    assert result["credential_store"].startswith("<SECRET:")
+
+
+def test_same_token_value_produces_same_mask_for_correlation():
+    # Same confirmation_token value showing up in two different audit
+    # events must mask to the identical tag, so the events can still be
+    # joined together in the log without the real token ever appearing.
+    event_a = {"event_type": "confirmation_requested", "confirmation_token": "tok-999"}
+    event_b = {"event_type": "confirmation_granted", "confirmation_token": "tok-999"}
+    masked_a = redact_sensitive_data(event_a)
+    masked_b = redact_sensitive_data(event_b)
+    assert masked_a["confirmation_token"] == masked_b["confirmation_token"]
+
+
+def test_different_token_values_produce_different_masks():
+    masked_1 = redact_sensitive_data({"token": "tok-1"})["token"]
+    masked_2 = redact_sensitive_data({"token": "tok-2"})["token"]
+    assert masked_1 != masked_2
 
 
 def test_long_string_is_collapsed_to_fingerprint():
@@ -49,11 +75,10 @@ def test_shape_is_preserved_for_dicts_and_lists():
         "note": None,
     }
     result = redact_sensitive_data(data)
-    assert result == {
-        "user": "<EMAIL>",
-        "attempts": [1, 2, {"password": "<SECRET>"}],
-        "note": None,
-    }
+    assert result["user"] == "<EMAIL>"
+    assert result["attempts"][:2] == [1, 2]
+    assert result["attempts"][2]["password"].startswith("<SECRET:")
+    assert result["note"] is None
 
 
 def test_normal_strings_are_not_over_redacted():
