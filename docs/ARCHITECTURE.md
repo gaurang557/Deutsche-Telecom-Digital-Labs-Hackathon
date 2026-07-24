@@ -5,7 +5,7 @@ each decision. It addresses every topic required by the deliverable. Where a
 capability is not yet implemented, it is marked **[Planned]** and the design is
 described so the intent is clear and reviewable.
 
-Legend: **[Implemented]** = code exists today (through Milestone 3). **[Planned]** =
+Legend: **[Implemented]** = code exists today (through Milestone 6). **[Planned]** =
 designed, lands in a later milestone.
 
 ---
@@ -101,12 +101,20 @@ backbone everything else plugs into:
 
 Executor preference order (most reliable first):
 1. **Structured file/application APIs** — PyMuPDF (PDF) **[Implemented — M3, read
-   only]**, openpyxl (XLSX) [Planned], python-docx (DOCX) [Planned], python-pptx
-   (PPTX) [Planned]. Reading a cell (or a PDF page) via a library is far more
-   reliable than scraping a GUI. The read-only `pdf.*` actions
+   only]**, openpyxl (XLSX) **[Implemented — M4, read + write_cell]**, python-docx
+   (DOCX) **[Implemented — M6, read + replace_text]**, python-pptx (PPTX)
+   [Planned]. Reading (or writing) a cell — or a PDF page — via a library is far
+   more reliable than scraping a GUI. The read-only `pdf.*` actions
    (`pdf.page_count`, `pdf.get_metadata`, `pdf.read_text`, `pdf.search`) live in
-   `executors/pdf_ops.py`; extracted text/matches are bounded and treated as
-   untrusted data.
+   `executors/pdf_ops.py`. The `spreadsheet.*` actions (`list_sheets`,
+   `dimensions`, `read_cell`, `read_range` read-only; `write_cell` modifying) live
+   in `executors/spreadsheet_ops.py`; reads use `data_only=True` (cached values)
+   and writes use `data_only=False` (preserving formulas elsewhere). The
+   `document.*` actions (`read_text`, `get_metadata`, `find` read-only;
+   `replace_text` modifying) live in `executors/document_ops.py`; `replace_text`
+   edits at the **run level** to preserve formatting (a cross-run match falls back
+   to the first run's formatting — documented limitation). Extracted text/values
+   are bounded and treated as untrusted data.
 2. **Accessibility / semantic UI automation** — Windows UI Automation via
    `pywinauto` (roles, names, control patterns).
 3. **Keyboard shortcuts**.
@@ -129,7 +137,7 @@ text are always **untrusted data**.
   is **revalidated against the real environment before important actions** — a
   window may have closed or focus changed.
 
-## 5. Action verification  **[Implemented — M2 for file.*; more executors later]**
+## 5. Action verification  **[Implemented — M2 for file.*, M4 for spreadsheet.write_cell, M6 for document.replace_text; more executors later]**
 
 - **A function returning without an exception is NOT proof of success.** Every
   modifying action must independently **re-observe state**. Implemented today
@@ -139,12 +147,16 @@ text are always **untrusted data**.
   - `file.write_text` → re-read; content/length matches what was written. [Implemented]
   - `file.mkdir` → the directory now exists. [Implemented]
   - `file.delete` → the path is gone. [Implemented]
-  - `spreadsheet.write_cell` → reload and re-read the cell; expected == observed. [Planned — M4]
-  - `document.replace_text` → reopen; the replacement is present. [Planned — M6]
+  - `spreadsheet.write_cell` → reload the workbook and re-read the cell; expected == observed (numbers compared numerically). [Implemented — M4]
+  - `document.replace_text` → reopen the output document and re-scan its text; the replacement is present at least the expected number of times and (when the correction removes it) the original text is gone. [Implemented — M6]
 - **Read-only actions need no verifier.** The `pdf.*` actions added in M3
-  (`executors/pdf_ops.py`) are `RiskLevel.NONE` (no side effects), so no verifier
-  is registered and the VerificationRegistry correctly returns `SKIPPED` — the
-  same treatment as `file.exists`/`file.list`/`file.read_text`.
+  (`executors/pdf_ops.py`), the read-only `spreadsheet.*` actions added in M4
+  (`spreadsheet.list_sheets`/`dimensions`/`read_cell`/`read_range`), and the
+  read-only `document.*` actions added in M6
+  (`document.read_text`/`get_metadata`/`find`) are `RiskLevel.NONE` (no side
+  effects), so no verifier is registered and the VerificationRegistry correctly
+  returns `SKIPPED` — the same treatment as
+  `file.exists`/`file.list`/`file.read_text`.
 - `expected_result` on the `Action` feeds the verification assertion.
 - **Consequential actions are never auto-retried.** Retries are limited and
   logged with evidence.

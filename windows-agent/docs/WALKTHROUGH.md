@@ -83,9 +83,10 @@ decision. See the guards in `execution/dispatcher.py`.
 | M1 | policy gateway (mock), verification registry, audit sink, execution context, full pipeline | ✅ |
 | M2 | `file.*` executor (`executors/file_ops.py`) + verifiers (`verification/file_verifiers.py`) + native audit-log reader (`audit/query.py`) | ✅ |
 | M3 | read-only PDF executor (`executors/pdf_ops.py`) | ✅ |
-| M4 | spreadsheet executor | planned |
+| M4 | spreadsheet executor (`executors/spreadsheet_ops.py`) + write verifier (`verification/spreadsheet_verifiers.py`) | ✅ |
 | M5 | first deterministic multi-app workflow (PDF→spreadsheet) | planned |
-| M6–M8 | docx / pptx executors + doc→pptx workflow | planned |
+| M6 | docx executor (`executors/document_ops.py`) + replace_text verifier (`verification/document_verifiers.py`) | ✅ |
+| M7–M8 | pptx executor + doc→pptx workflow | planned |
 | M9 | Windows desktop adapter (UI Automation) | planned |
 | M10 | browser executor (Playwright) | planned |
 | M11 | audit persistence (SQLite) + redaction | planned |
@@ -106,8 +107,10 @@ milestones: `test_contracts.py`, `test_dispatcher.py` (M0); `test_registry.py`,
 `test_verification.py`, `test_pipeline.py`, `test_audit_events.py` (M1);
 `test_file_ops.py` (M2 — `file.*` executor + verifiers, unit + end-to-end);
 `test_audit_query.py` (native audit-log reader);
-`test_pdf_ops.py` (M3 — read-only `pdf.*` executor, unit + end-to-end).
-Current suite: **104 passed**.
+`test_pdf_ops.py` (M3 — read-only `pdf.*` executor, unit + end-to-end);
+`test_spreadsheet_ops.py` (M4 — `spreadsheet.*` executor + write verifier, unit + end-to-end);
+`test_document_ops.py` (M6 — `document.*` executor + replace_text verifier, unit + end-to-end).
+Current suite: **149 passed**.
 
 ## 7. Related docs
 
