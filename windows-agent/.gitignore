@@ -8,3 +8,8 @@ audit.log.jsonl
 artifacts/
 *.egg-info/
 .env
+
+# Kept local only (not tracked in git) — maintained on-disk, shared out-of-band.
+CHANGES.md
+docs/WALKTHROUGH.md
+docs/ARCHITECTURE.md
