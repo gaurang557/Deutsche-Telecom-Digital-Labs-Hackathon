@@ -1,10 +1,14 @@
-"""THROWAWAY EVALUATION HARNESS — delete before the freeze.
+r"""Generalization harness for live planning. Requires a running Ollama.
 
 Builds a HELD-OUT set that shares no filename, sheet name, label, domain or
-phrasing with the supplied fixture pack, then scores the live planner on it.
+phrasing with the supplied sample fixtures, then scores the live planner on it.
+It exists to answer one question: does the planner generalize, or has the prompt
+been tuned to the samples we happened to be given?
 
 Every expectation is computed from the generated workbook's real layout, never
-from a literal the planner could have memorised from the prompt.
+from a literal the planner could have copied out of the prompt.
+
+Not part of the test suite: it needs a live model and is slow.
 
     & ".\.venv\Scripts\python.exe" tools\holdout_eval.py [runs]
 """

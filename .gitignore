@@ -10,3 +10,7 @@ build/
 *.db-wal
 *.db-shm
 agent_store.db
+
+agent_store.db
+.pytest_cache/
+.ruff_cache/

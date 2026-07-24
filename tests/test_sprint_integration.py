@@ -554,7 +554,11 @@ def test_ollama_planner_accepts_canonical_structured_golden_plan(
 ) -> None:
     draft = _golden_draft(tmp_path / "input.pdf", tmp_path / "output.xlsx")
     planner = OllamaPlanner(Settings())
-    monkeypatch.setattr(planner, "_chat", lambda messages: draft.model_dump_json())
+    monkeypatch.setattr(
+        planner,
+        "_chat",
+        lambda messages, minimum_actions=1: draft.model_dump_json(),
+    )
 
     parsed = planner._create_draft_sync(TaskRequest(text="Update the workbook"))
 

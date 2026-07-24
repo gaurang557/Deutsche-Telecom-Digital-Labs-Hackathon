@@ -24,6 +24,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Only needed to run the planner against AGENT_LLM_PROVIDER=cursor.
+cursor = [
+    "cursor-sdk>=0.1",
+]
 dev = [
     "httpx>=0.28,<1.0",
     "pytest>=8.3,<9.0",

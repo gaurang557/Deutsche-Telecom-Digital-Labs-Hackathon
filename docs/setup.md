@@ -217,6 +217,44 @@ Open the latest PDF in the Downloads folder.
 The planner should generate one `open_file` action. The executor selects the
 newest PDF and opens it using the operating system's default PDF application.
 
+## Choosing the planner backend
+
+The planner generates plans through one of two backends, selected by
+`AGENT_LLM_PROVIDER`:
+
+| Value | Backend | Notes |
+| --- | --- | --- |
+| `ollama` | Local Ollama (default) | Uses JSON-schema constrained decoding. |
+| `cursor` | Cursor SDK | Requires the optional SDK and an API key. |
+
+Leaving `AGENT_LLM_PROVIDER` unset keeps the local Ollama behaviour described
+above. To use Cursor instead, install the optional dependency and set the
+credential in the shell environment. It is read from `CURSOR_API_KEY` by the
+SDK and is deliberately not an application setting, so never put it in `.env`.
+
+### macOS
+
+```bash
+pip install -e ".[cursor]"
+export CURSOR_API_KEY="cursor_..."
+export AGENT_LLM_PROVIDER=cursor
+```
+
+### Windows PowerShell
+
+```powershell
+pip install -e ".[cursor]"
+$env:CURSOR_API_KEY = "cursor_..."
+$env:AGENT_LLM_PROVIDER = "cursor"
+```
+
+`AGENT_CURSOR_MODEL` selects the model and defaults to `composer-2.5`. Restart
+FastAPI after changing either variable. Cursor requests consume Cursor credits,
+and there is no automatic fallback to Ollama: a Cursor failure is reported as a
+failure. Cursor cannot constrain decoding to the plan schema, so the schema is
+requested in the prompt and the planner's own validation and repair loop
+remains what decides whether a plan is acceptable.
+
 ## Tests and build verification
 
 With the Python environment activated:

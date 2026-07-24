@@ -2,16 +2,12 @@ import asyncio
 import json
 import re
 from typing import Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.planning.exceptions import (
-    InvalidPlannerResponseError,
-    PlannerUnavailableError,
-)
+from app.planning.exceptions import InvalidPlannerResponseError
+from app.planning.providers import LLMProvider, get_provider
 from app.schemas import DraftPlan, TaskRequest
 from app.structured_actions import (
     PLANNER_ACTION_GUIDANCE,
@@ -44,9 +40,13 @@ separate open_application or focus_application actions for browser navigation.
 Use Windows application targets such as "Calculator", "Notepad", "File Explorer",
 "Microsoft Edge", and "Google Chrome". Never propose macOS-only close-all or Gmail
 capture actions on Windows.
-Use an absolute Windows path only when the user actually said one. Otherwise begin
-local file paths with a known folder alias: Desktop, Documents, or Downloads (for
-example Downloads\\quarterly.pdf), which this computer resolves for you. Never
+Write every path with forward slashes, like Documents/notes.txt, even on Windows.
+This computer accepts them and they avoid escaping mistakes. Never use a backslash
+in a path.
+Use an absolute path only when the user actually said one; keep it exactly as they
+said it, but with forward slashes. Otherwise begin local file paths with a known
+folder alias: Desktop, Documents, or Downloads (for example
+Downloads/quarterly.pdf), which this computer resolves for you. Never
 invent a drive, a user profile, or a repo-relative path. In particular never write
 a literal C:\\Users\\... path that the user did not say, because you do not know
 the account name. Never emit ~/ or /tmp paths.
@@ -59,7 +59,7 @@ not exist yet can never satisfy a create request.
 To create a new spreadsheet, use one spreadsheet.write_cell action whose target is
 a new .xlsx path under Desktop, Documents, or Downloads; it creates the workbook.
 Give it a sheet, a cell such as A1, and a value. For "create a new Excel document"
-use target Desktop\\new_workbook.xlsx with parameters
+use target Desktop/new_workbook.xlsx with parameters
 {{"sheet": "Sheet1", "cell": "A1", "value": "..."}} and no overwrite.
 You cannot create a new PDF, a new Word document, or a new PowerPoint file from
 nothing, and you have no action that deletes files or runs commands. If the user
@@ -99,7 +99,7 @@ _FEW_SHOT_ASSISTANT = json.dumps(
             {
                 "step_key": "read_source",
                 "type": "pdf.read_text",
-                "target": "Documents\\supplier_invoice.pdf",
+                "target": "Documents/supplier_invoice.pdf",
                 "description": "Read the shipped quantities from the invoice.",
                 "parameters": {"max_chars": 4000},
                 "depends_on": [],
@@ -108,7 +108,7 @@ _FEW_SHOT_ASSISTANT = json.dumps(
             {
                 "step_key": "list_sheets",
                 "type": "spreadsheet.list_sheets",
-                "target": "Documents\\inventory.xlsx",
+                "target": "Documents/inventory.xlsx",
                 "description": "See which sheets the workbook has.",
                 "parameters": {},
                 "depends_on": ["read_source"],
@@ -117,7 +117,7 @@ _FEW_SHOT_ASSISTANT = json.dumps(
             {
                 "step_key": "read_layout",
                 "type": "spreadsheet.read_range",
-                "target": "Documents\\inventory.xlsx",
+                "target": "Documents/inventory.xlsx",
                 "description": "Look at the sheet to find the part's row.",
                 "parameters": {"sheet": "Stock", "range": "A1:F30"},
                 "depends_on": ["list_sheets"],
@@ -126,7 +126,7 @@ _FEW_SHOT_ASSISTANT = json.dumps(
             {
                 "step_key": "write_value",
                 "type": "spreadsheet.write_cell",
-                "target": "Documents\\inventory.xlsx",
+                "target": "Documents/inventory.xlsx",
                 "description": "Record the unit count against the part.",
                 "parameters": {
                     "sheet": "Stock",
@@ -167,6 +167,34 @@ MAX_PLANNING_ATTEMPTS = 3
 
 
 _FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+#: A path-like token: something carrying a file extension.
+_PATH_TOKEN_PATTERN = re.compile(r"[\w~%\-./\\:]+\.[A-Za-z0-9]{2,5}\b")
+
+
+def minimum_action_count(text: str) -> int:
+    """How many actions the request cannot possibly be satisfied with fewer than.
+
+    Constrained decoding is what keeps llama3.2's JSON syntactically valid, but
+    with the schema's own `minItems: 1` the model closes the actions array after
+    a single step — turning "read this and write it there" into a read that
+    changes nothing. Counting the distinct files the user named gives a floor
+    that is true of any request, in any domain: touching two files needs at
+    least two actions. Capped at 2 so the model is never forced to pad a plan.
+    """
+    names = {
+        match.group(0).casefold().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        for match in _PATH_TOKEN_PATTERN.finditer(text)
+    }
+    return 2 if len(names) >= 2 else 1
+
+
+def _plan_schema(minimum_actions: int) -> dict:
+    """The DraftPlan JSON schema with a floor on the number of actions."""
+    schema = DraftPlan.model_json_schema()
+    if minimum_actions > 1:
+        schema["properties"]["actions"]["minItems"] = minimum_actions
+    return schema
 
 
 def extract_json_object(content: str) -> str:
@@ -211,10 +239,13 @@ class Planner(Protocol):
 
 
 class OllamaPlanner:
-    def __init__(self, settings: Settings) -> None:
-        self._url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
-        self._model = settings.ollama_model
-        self._timeout = settings.ollama_timeout_seconds
+    def __init__(
+        self, settings: Settings, provider: LLMProvider | None = None
+    ) -> None:
+        self._settings = settings
+        # Resolved on first use rather than here, so constructing a planner never
+        # depends on the configured backend being installed or credentialled.
+        self._provider = provider
 
     async def create_draft(self, request: TaskRequest) -> DraftPlan:
         return await asyncio.to_thread(self._create_draft_sync, request)
@@ -225,9 +256,10 @@ class OllamaPlanner:
             {"role": "user", "content": request.text},
         ]
 
+        minimum_actions = minimum_action_count(request.text)
         last_error: Exception | None = None
         for attempt in range(MAX_PLANNING_ATTEMPTS):
-            content = self._chat(messages)
+            content = self._chat(messages, minimum_actions)
             try:
                 return DraftPlan.model_validate_json(extract_json_object(content))
             except (ValidationError, ValueError) as exc:
@@ -244,37 +276,17 @@ class OllamaPlanner:
                 )
 
         raise InvalidPlannerResponseError(
-            "The local model could not produce a valid action plan"
+            "The configured model could not produce a valid action plan."
         ) from last_error
 
-    def _chat(self, messages: list[dict[str, str]]) -> str:
-        # No `format` schema: constrained decoding against DraftPlan made
-        # llama3.2 close the actions array as soon as minItems=1 was satisfied,
-        # so a three-step "read a value, write it elsewhere" plan came back as a
-        # read with no write. Free generation returns the complete plan, and
-        # DraftPlan validation plus the repair loop keep the boundary strict.
-        payload = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            "options": {"temperature": 0},
-        }
-        http_request = Request(
-            self._url,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+    def _chat(self, messages: list[dict[str, str]], minimum_actions: int = 1) -> str:
+        """The planner's model seam: one exchange with the configured backend.
+
+        Kept as a method because tests and subclasses replace it to script the
+        model; the transport itself now lives in the provider.
+        """
+        if self._provider is None:
+            self._provider = get_provider(self._settings)
+        return self._provider.complete(
+            messages, json_schema=_plan_schema(minimum_actions)
         )
-
-        try:
-            with urlopen(http_request, timeout=self._timeout) as response:
-                body = json.load(response)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            raise PlannerUnavailableError("Ollama is unavailable") from exc
-
-        try:
-            return body["message"]["content"]
-        except (KeyError, TypeError) as exc:
-            raise InvalidPlannerResponseError(
-                "Ollama returned an incomplete response"
-            ) from exc

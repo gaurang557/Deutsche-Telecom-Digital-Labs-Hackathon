@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     app_name: str = "Voice desk"
     app_version: str = "0.1.0"
     debug: bool = False
+
+    # Which backend the planner generates plans with: "ollama" or "cursor".
+    # The Cursor credential is never configuration: the SDK reads CURSOR_API_KEY
+    # from the process environment and it is deliberately absent from Settings.
+    llm_provider: str = "ollama"
+    cursor_model: str = "composer-2.5"
+
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     ollama_timeout_seconds: float = 60.0
