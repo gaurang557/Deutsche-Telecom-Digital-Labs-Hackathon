@@ -15,6 +15,7 @@ class RiskLevel(str, Enum):
     MEDIUM       = "medium"        # creates state (new file)
     HIGH         = "high"          # destructive but local (overwrite, delete, bulk rename)
     CONSEQUENTIAL = "consequential" # leaves the machine (send, submit, publish, purchase)
+    FORBIDDEN = "forbidden"   # never executable, regardless of confirmation
 
 class PolicyOutcome(str, Enum):
     ALLOW   = "allow"
@@ -37,6 +38,9 @@ class ActionStatus(str, Enum):
     FAILURE = "failure"
     PARTIAL = "partial"   # started, outcome unknown — do NOT collapse this to a bool
     SKIPPED = "skipped"
+    DENIED             = "denied"              # policy blocked it; never executed
+    NEEDS_CONFIRMATION = "needs_confirmation"  # held pending user confirmation
+    CLARIFY            = "clarify"             # held pending user clarification
 ```
 
 `RiskLevel` distinguishes HIGH from CONSEQUENTIAL because recovery treats them differently: a failed overwrite can sometimes be retried, a failed send cannot.
