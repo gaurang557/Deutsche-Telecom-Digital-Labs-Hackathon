@@ -1,0 +1,10 @@
+# Self-contained ignore rules for the windows-agent module, so its build/test
+# artifacts never touch the shared source folder or other teammates' entities.
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+audit.log.jsonl
+artifacts/
+*.egg-info/
+.env
