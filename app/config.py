@@ -1,7 +1,11 @@
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+# agent/config.py
+from pathlib import Path
+import os
 
+DB_PATH = Path(os.environ.get("AGENT_DB", Path(__file__).parent.parent / "agent_store.db")).resolve()
 
 class Settings(BaseSettings):
     app_name: str = "Voice-Controlled Desktop Agent"
