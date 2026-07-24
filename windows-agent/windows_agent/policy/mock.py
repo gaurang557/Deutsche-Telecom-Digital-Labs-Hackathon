@@ -14,27 +14,15 @@ confirmation can be bound to the exact action (see PolicyDecision.action_hash).
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from typing import Any
 
 from ..contracts import Action, PolicyDecision, PolicyOutcome, RiskLevel
 from .base import Policy
 
-
-def action_hash(action: Action) -> str:
-    """Stable SHA-256 over the identity-relevant parts of an action.
-
-    Changing type/target/parameters changes the hash, which is what invalidates
-    a stale confirmation. Internal use only.
-    """
-    payload = json.dumps(
-        {"type": action.type, "target": action.target, "parameters": action.parameters},
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+# `action_hash` now lives with the confirmation primitives (M12) as the single
+# source of truth; re-exported here so existing imports keep working.
+from .confirmation import action_hash  # noqa: F401  (re-exported for back-compat)
 
 
 class AllowAllPolicy(Policy):
