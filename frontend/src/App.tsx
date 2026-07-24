@@ -1,9 +1,14 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   createPlan,
+  controlPlan,
   executePlan,
+  getTask,
+  listTasks,
   type PlanExecutionResponse,
   type PlanningResponse,
+  type TaskStatus,
+  type TaskSummary,
   type TaskRequest,
 } from "./api";
 import { useVoiceCapture } from "./useVoiceCapture";
@@ -73,6 +78,11 @@ export default function App() {
   const [executionResult, setExecutionResult] =
     useState<PlanExecutionResponse | null>(null);
   const [executionError, setExecutionError] = useState<string | null>(null);
+  const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
+  const [recentTasks, setRecentTasks] = useState<TaskSummary[]>([]);
+  const [taskEvents, setTaskEvents] = useState<
+    { event_type: string; message: string; created_at: string }[]
+  >([]);
   const {
     status,
     result,
@@ -94,6 +104,12 @@ export default function App() {
       .catch(() => setHealth(null));
   }, []);
 
+  const refreshTasks = useCallback(() => {
+    void listTasks().then(setRecentTasks).catch(() => undefined);
+  }, []);
+
+  useEffect(refreshTasks, [refreshTasks]);
+
   const requestPlan = useCallback(async (request: TaskRequest) => {
     setActiveRequest(request);
     setPlanning(true);
@@ -101,9 +117,13 @@ export default function App() {
     setPlanningResult(null);
     setExecutionResult(null);
     setExecutionError(null);
+    setTaskEvents([]);
 
     try {
-      setPlanningResult(await createPlan(request));
+      const response = await createPlan(request);
+      setPlanningResult(response);
+      setTaskStatus(response.plan ? "planned" : null);
+      refreshTasks();
     } catch (reason: unknown) {
       setPlanningError(
         reason instanceof Error
@@ -113,7 +133,7 @@ export default function App() {
     } finally {
       setPlanning(false);
     }
-  }, []);
+  }, [refreshTasks]);
 
   useEffect(() => {
     if (result?.text) void requestPlan(result);
@@ -142,9 +162,14 @@ export default function App() {
       .map((action) => action.action_id);
 
     setExecuting(true);
+    setTaskStatus("running");
     setExecutionError(null);
     try {
-      setExecutionResult(await executePlan(plan.plan_id, approvedActionIds));
+      const response = await executePlan(plan.plan_id, approvedActionIds);
+      setExecutionResult(response);
+      setTaskStatus(response.status);
+      setTaskEvents((await getTask(plan.plan_id)).events);
+      refreshTasks();
     } catch (reason: unknown) {
       setExecutionError(
         reason instanceof Error
@@ -156,12 +181,59 @@ export default function App() {
     }
   };
 
+  const changeTaskState = async (intent: "pause" | "resume" | "cancel") => {
+    const planId = planningResult?.plan?.plan_id;
+    if (!planId) return;
+    try {
+      const task = await controlPlan(planId, intent);
+      setTaskStatus(task.status);
+      setTaskEvents(task.events);
+      refreshTasks();
+    } catch (reason: unknown) {
+      setExecutionError(
+        reason instanceof Error ? reason.message : `Could not ${intent} task`,
+      );
+    }
+  };
+
+  const openRecentTask = async (task: TaskSummary) => {
+    if (executing) return;
+    try {
+      const detail = await getTask(task.plan_id);
+      setActiveRequest({
+        request_id: detail.request_id,
+        text: detail.request_text,
+        source: "text",
+        confidence: null,
+        received_at: detail.created_at,
+      });
+      setPlanningResult({
+        request_id: detail.request_id,
+        control_intent: null,
+        plan: detail.plan,
+      });
+      setExecutionResult(
+        detail.results.length
+          ? { plan_id: detail.plan_id, status: detail.status, results: detail.results }
+          : null,
+      );
+      setTaskStatus(detail.status);
+      setTaskEvents(detail.events);
+      setPlanningError(null);
+      setExecutionError(null);
+    } catch (reason: unknown) {
+      setExecutionError(reason instanceof Error ? reason.message : "Could not load task");
+    }
+  };
+
   const resetConversation = () => {
     setActiveRequest(null);
     setPlanningResult(null);
     setPlanningError(null);
     setExecutionResult(null);
     setExecutionError(null);
+    setTaskStatus(null);
+    setTaskEvents([]);
     setDraft("");
   };
 
@@ -195,10 +267,25 @@ export default function App() {
         </button>
 
         <div className="sidebar__section">
-          <p className="sidebar__label">Workspace</p>
-          <div className="sidebar__item sidebar__item--active">
-            <span className="sidebar__glyph" aria-hidden="true">⌁</span>
-            Voice desk
+          <p className="sidebar__label">Recent tasks</p>
+          <div className="task-history">
+            {recentTasks.length === 0 && (
+              <p className="task-history__empty">Your completed tasks will appear here.</p>
+            )}
+            {recentTasks.map((task) => (
+              <button
+                className="task-history__item"
+                type="button"
+                key={task.plan_id}
+                onClick={() => void openRecentTask(task)}
+                disabled={executing}
+              >
+                <span>{task.request_text}</span>
+                <small className={`task-status task-status--${task.status}`}>
+                  {readableStatus(task.status)}
+                </small>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -394,6 +481,26 @@ export default function App() {
                           </>
                         )}
                       </button>
+                      {executing && (
+                        <div className="task-controls" aria-label="Task controls">
+                          {taskStatus === "paused" ? (
+                            <button type="button" onClick={() => void changeTaskState("resume")}>
+                              Resume
+                            </button>
+                          ) : (
+                            <button type="button" onClick={() => void changeTaskState("pause")}>
+                              Pause
+                            </button>
+                          )}
+                          <button
+                            className="task-controls__cancel"
+                            type="button"
+                            onClick={() => void changeTaskState("cancel")}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -435,6 +542,26 @@ export default function App() {
                         <span>Step {index + 1}</span>
                         <strong>{readableStatus(action.status)}</strong>
                         {action.error && <p>{action.error}</p>}
+                        {action.verification && (
+                          <div
+                            className={`verification verification--${
+                              action.verification.passed === true
+                                ? "passed"
+                                : action.verification.passed === false
+                                  ? "failed"
+                                  : "unknown"
+                            }`}
+                          >
+                            <span aria-hidden="true">
+                              {action.verification.passed === true
+                                ? "✓"
+                                : action.verification.passed === false
+                                  ? "!"
+                                  : "○"}
+                            </span>
+                            {action.verification.message}
+                          </div>
+                        )}
                         {evidenceText(action.evidence, "summary") && (
                           <div className="evidence-panel evidence-panel--summary">
                             <span>Email summary</span>
@@ -451,6 +578,30 @@ export default function App() {
                     ))}
                   </ul>
                 </div>
+              </div>
+            </article>
+          )}
+
+          {taskEvents.length > 0 && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <details className="activity-log">
+                  <summary>Task activity</summary>
+                  <ol>
+                    {taskEvents.map((event, index) => (
+                      <li key={`${event.created_at}-${index}`}>
+                        <span>{event.message}</span>
+                        <time dateTime={event.created_at}>
+                          {new Date(event.created_at).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </time>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
               </div>
             </article>
           )}

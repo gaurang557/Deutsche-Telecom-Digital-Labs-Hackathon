@@ -20,7 +20,7 @@ class PlanningService:
 
         draft = await self._planner.create_draft(request)
         plan = build_action_plan(request, draft)
-        self._repository.save(plan)
+        self._repository.save(plan, request)
         return PlanningResponse(
             request_id=request.request_id,
             plan=plan,

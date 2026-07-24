@@ -136,11 +136,18 @@ class ActionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class VerificationResult(BaseModel):
+    passed: bool | None = None
+    message: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
 class ActionResult(BaseModel):
     action_id: UUID
     status: ActionStatus
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    verification: VerificationResult | None = None
 
 
 class ExecutePlanRequest(BaseModel):
@@ -150,6 +157,9 @@ class ExecutePlanRequest(BaseModel):
 
 
 class ExecutionStatus(StrEnum):
+    PLANNED = "planned"
+    RUNNING = "running"
+    PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
@@ -160,3 +170,29 @@ class PlanExecutionResponse(BaseModel):
     plan_id: UUID
     status: ExecutionStatus
     results: list[ActionResult]
+
+
+class PlanControlRequest(BaseModel):
+    intent: Literal["pause", "resume", "cancel"]
+
+
+class TaskSummary(BaseModel):
+    plan_id: UUID
+    request_id: UUID
+    request_text: str
+    summary: str
+    status: ExecutionStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskEvent(BaseModel):
+    event_type: str
+    message: str
+    created_at: datetime
+
+
+class TaskDetail(TaskSummary):
+    plan: ActionPlan
+    results: list[ActionResult] = Field(default_factory=list)
+    events: list[TaskEvent] = Field(default_factory=list)

@@ -39,12 +39,46 @@ export interface ActionResult {
   status: "succeeded" | "failed" | "blocked" | "cancelled";
   evidence: Record<string, unknown>;
   error: string | null;
+  verification: {
+    passed: boolean | null;
+    message: string;
+    evidence: Record<string, unknown>;
+  } | null;
 }
+
+export type TaskStatus =
+  | "planned"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "cancelled";
 
 export interface PlanExecutionResponse {
   plan_id: string;
-  status: "completed" | "failed" | "blocked" | "cancelled";
+  status: TaskStatus;
   results: ActionResult[];
+}
+
+export interface TaskSummary {
+  plan_id: string;
+  request_id: string;
+  request_text: string;
+  summary: string;
+  status: TaskStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskDetail extends TaskSummary {
+  plan: NonNullable<PlanningResponse["plan"]>;
+  results: ActionResult[];
+  events: {
+    event_type: string;
+    message: string;
+    created_at: string;
+  }[];
 }
 
 /** Upload a recorded audio clip and get back the transcribed TaskRequest. */
@@ -102,4 +136,34 @@ export async function executePlan(
     throw new Error(body?.detail ?? `Execution failed (HTTP ${response.status})`);
   }
   return (await response.json()) as PlanExecutionResponse;
+}
+
+export async function listTasks(): Promise<TaskSummary[]> {
+  const response = await fetch("/api/v1/tasks");
+  if (!response.ok) throw new Error("Could not load recent tasks");
+  return (await response.json()) as TaskSummary[];
+}
+
+export async function getTask(planId: string): Promise<TaskDetail> {
+  const response = await fetch(`/api/v1/tasks/${planId}`);
+  if (!response.ok) throw new Error("Could not load task");
+  return (await response.json()) as TaskDetail;
+}
+
+export async function controlPlan(
+  planId: string,
+  intent: "pause" | "resume" | "cancel",
+): Promise<TaskDetail> {
+  const response = await fetch(`/api/v1/plans/${planId}/control`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ intent }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `Could not ${intent} task`);
+  }
+  return (await response.json()) as TaskDetail;
 }

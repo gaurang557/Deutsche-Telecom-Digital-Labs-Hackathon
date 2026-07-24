@@ -3,12 +3,15 @@ import os
 import platform
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
 from app.execution.gmail import capture_open_gmail_email, summarize_email
+from app.execution.semantic import NativeSemanticDesktop, SemanticDesktop
+from app.execution.verification import verify_action
 from app.schemas import (
     Action,
     ActionPlan,
@@ -49,15 +52,37 @@ _MACOS_PROTECTED_APPLICATIONS = {
 class DesktopExecutor:
     """Execute the allow-listed MVP actions on macOS and Windows."""
 
+    def __init__(self, desktop: SemanticDesktop | None = None) -> None:
+        self._desktop = desktop or NativeSemanticDesktop()
+
     async def execute_plan(
         self,
         plan: ActionPlan,
         approved_action_ids: set[UUID],
+        control_state: Callable[[], ExecutionStatus | None] | None = None,
     ) -> PlanExecutionResponse:
         results: list[ActionResult] = []
         succeeded: set[UUID] = set()
 
         for action in plan.actions:
+            if control_state is not None:
+                state = control_state()
+                while state is ExecutionStatus.PAUSED:
+                    await asyncio.sleep(0.2)
+                    state = control_state()
+                if state is ExecutionStatus.CANCELLED:
+                    results.append(
+                        ActionResult(
+                            action_id=action.action_id,
+                            status=ActionStatus.CANCELLED,
+                            error="Cancelled by the user",
+                        )
+                    )
+                    return PlanExecutionResponse(
+                        plan_id=plan.plan_id,
+                        status=ExecutionStatus.CANCELLED,
+                        results=results,
+                    )
             if any(dependency not in succeeded for dependency in action.depends_on):
                 results.append(
                     ActionResult(
@@ -107,10 +132,20 @@ class DesktopExecutor:
             if action.type in _UNSUPPORTED_EXTERNAL_ACTIONS:
                 return self._unsupported(action)
             evidence = self._dispatch(action)
+            verification = verify_action(action, evidence, self._desktop)
+            if verification.passed is False:
+                return ActionResult(
+                    action_id=action.action_id,
+                    status=ActionStatus.FAILED,
+                    evidence=evidence,
+                    error=verification.message,
+                    verification=verification,
+                )
             return ActionResult(
                 action_id=action.action_id,
                 status=ActionStatus.SUCCEEDED,
                 evidence=evidence,
+                verification=verification,
             )
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             return ActionResult(
