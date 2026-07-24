@@ -17,9 +17,9 @@ import sys
 import time
 
 from agent import store
+from agent.config import DB_PATH
 from agent.models import AuditEvent
 
-DEFAULT_DB_PATH = "agent_store.db"
 POLL_INTERVAL_SECONDS = 1.0
 
 ACTION_ID_WIDTH = 14
@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Print a request's audit trail as a table.")
     parser.add_argument("request_id")
     parser.add_argument(
-        "--db-path", default=DEFAULT_DB_PATH, help="SQLite file to read (default: %(default)s)"
+        "--db-path", default=DB_PATH, help="SQLite file to read (default: %(default)s)"
     )
     parser.add_argument(
         "--tail", action="store_true", help="keep polling and print new events as they arrive"
