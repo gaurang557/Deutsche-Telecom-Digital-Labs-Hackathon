@@ -261,14 +261,37 @@ never prompts for a password). All extracted text is **untrusted data**.
 
 Backed by openpyxl (a structured `.xlsx` API — far more reliable than scraping a
 viewer). `target` is the workbook path; only `.xlsx` is supported. `sheet` is
-optional and defaults to the active/first sheet; a named-but-missing sheet is
-rejected (`sheet_not_found`). Cell/range references are A1-style strings and are
-validated. Cell values are returned as JSON primitives (numbers / string / bool
+optional and defaults to the active/first sheet; a named sheet is resolved
+deterministically (see **Sheet resolution** below) and rejected with
+`sheet_not_found` when it cannot be resolved without guessing. Cell/range
+references are A1-style strings and are validated. Cell values are returned as
+JSON primitives (numbers / string / bool
 / null); dates/times become ISO-8601 strings. **Reads use `data_only=True`**, so
 a formula cell returns its last *cached* value — a formula never opened /
 recalculated in Excel reads back as `null` (the accepted trade-off; the
 alternative would return the formula text instead of a value). All cell values
 are **untrusted data**.
+
+**Sheet resolution** (applies to every `spreadsheet.*` action that takes `sheet`,
+including `write_cell` on an existing workbook). A caller often cannot know a
+workbook's sheet names in advance, so a requested name is matched in this fixed
+order — no guessing, no model judgement:
+
+1. `sheet` omitted, `null`, or blank → the workbook's **active/first** sheet.
+2. an **exact** match → that sheet.
+3. a match **ignoring surrounding whitespace and letter case** → that sheet.
+4. no match and the workbook has **exactly one** sheet → that sheet; the request
+   could not have meant anything else.
+5. no match and the workbook has **several** sheets → **`sheet_not_found`**,
+   listing the available names. Choosing one of several would risk silently
+   writing to the wrong place.
+
+Whenever the sheet used differs from the name requested (cases 3 and 4), the
+evidence carries `requested_sheet` and `sheet_substituted: true`, and the audit
+trail records the substitution — a leniency that left no trace would be
+indistinguishable from the caller having been right. `write_cell`'s verifier
+resolves the sheet with the same rule, so a write and its independent re-read
+always agree on which sheet was meant.
 
 #### `spreadsheet.list_sheets`
 - **Use:** list the workbook's sheet names (in order).
@@ -315,9 +338,10 @@ are **untrusted data**.
   observed value equals the intended value (numbers compared numerically, so
   `42` vs `42.0` still passes).
 - **notes:** if the workbook is **missing** it is created (its default sheet is
-  used, optionally renamed to `sheet`). If the workbook **exists** but the named
-  `sheet` does not, the action **fails closed** (`sheet_not_found`) — it never
-  silently creates a sheet. If the target cell already holds a **non-empty**
+  used, optionally renamed to `sheet`). If the workbook **exists**, `sheet` goes
+  through **Sheet resolution** above and an unresolvable name **fails closed**
+  (`sheet_not_found`) — a sheet is never silently created. If the target cell
+  already holds a **non-empty**
   value and `overwrite` is not `true`, it fails with `cell_occupied` (mirrors
   `file.write_text`). `overwrite: true` replacing an existing value escalates
   risk to `HIGH`.
@@ -590,7 +614,7 @@ Spreadsheet-specific codes (from the spreadsheet executor; it also reuses
 | Code | When |
 |------|------|
 | `not_a_spreadsheet` | Target is not a `.xlsx` file, or cannot be opened/parsed as a workbook. |
-| `sheet_not_found` | The named sheet does not exist in the workbook. |
+| `sheet_not_found` | The named sheet does not exist and the workbook has several sheets, so it cannot be resolved without guessing. |
 | `invalid_cell` | The cell reference is malformed (e.g. not `"B7"`). |
 | `invalid_range` | The range reference is malformed (e.g. not `"A1:C10"`). |
 | `cell_occupied` | `spreadsheet.write_cell` target cell is non-empty and `overwrite` not set. |

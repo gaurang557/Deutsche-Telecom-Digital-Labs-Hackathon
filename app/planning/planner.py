@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 from typing import Protocol
 
@@ -7,12 +8,19 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.planning.exceptions import InvalidPlannerResponseError
+from app.planning.plan_repair import (
+    RecoverablePlanError,
+    correct_action_families,
+    find_recoverable_problems,
+)
 from app.planning.providers import LLMProvider, get_provider
 from app.schemas import DraftPlan, TaskRequest
 from app.structured_actions import (
     PLANNER_ACTION_GUIDANCE,
     PLANNER_VISIBLE_ACTION_TYPES,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = f"""You are a warm, capable desktop assistant. Convert the user's
 speech transcript into a minimal ordered semantic plan for a Windows computer.
@@ -45,11 +53,17 @@ This computer accepts them and they avoid escaping mistakes. Never use a backsla
 in a path.
 Use an absolute path only when the user actually said one; keep it exactly as they
 said it, but with forward slashes. Otherwise begin local file paths with a known
-folder alias: Desktop, Documents, or Downloads (for example
-Downloads/quarterly.pdf), which this computer resolves for you. Never
-invent a drive, a user profile, or a repo-relative path. In particular never write
-a literal C:\\Users\\... path that the user did not say, because you do not know
-the account name. Never emit ~/ or /tmp paths.
+folder alias: Desktop, Documents, or Downloads, which this computer resolves for
+you. Never invent a drive, a user profile, or a repo-relative path. In particular
+never write a literal C:\\Users\\... path that the user did not say, because you do
+not know the account name. Never emit ~/ or /tmp paths.
+Use the alias the user actually named, and only that one. "On my desktop" is
+Desktop; Downloads is not a default and must appear only when the user said
+downloads. Choosing the wrong alias makes the file unfindable.
+When the user names a folder the file is in, keep that folder in the path as its
+own segment after the alias, so "the report in my archive folder on the desktop"
+is Desktop/archive/thatreport.ext. Never drop a folder the user named, and never
+move it to a different alias.
 Match the file extension to the kind of document: .xlsx is Excel/a spreadsheet/a
 workbook, .docx is Word, .pptx is PowerPoint, .pdf is a PDF. An "Excel doc" or
 "spreadsheet" is always .xlsx and never .docx.
@@ -69,10 +83,15 @@ For a PDF-to-workbook request, read the PDF with pdf.read_text, inspect the boun
 workbook area with spreadsheet.read_range, then use spreadsheet.write_cell. Bind
 the write value to the earlier PDF evidence with a result reference rather than
 copying or guessing the value.
-A request that takes a value out of one file and puts it into another is never
-finished by the reading step alone: it needs the writing step too, or nothing
-happens. Emit every step the goal requires and then stop. Do not add a step just
-to check that a file exists, and never repeat a step_key.
+Whenever the user asks you to change something — update, fill in, replace, put,
+record, move, rename — the plan MUST end with the action that performs that
+change. Reading steps only gather what the change needs; a plan made only of
+reads leaves the file exactly as it was and does not satisfy the request. Check
+before you answer that at least one step actually writes.
+To update text on a slide or in a document, read it to find the exact current
+wording, then use the matching replace_text action with that wording as find and
+the new wording as replace. Emit every step the goal requires and then stop. Do
+not add a step just to check that a file exists, and never repeat a step_key.
 If required information is missing, do not invent sensitive destinations,
 recipients, filenames, or overwrite intent.
 
@@ -84,6 +103,11 @@ recipients, filenames, or overwrite intent.
 #: "$placeholder" string; one concrete plan corrects both far better than prose.
 #: Deliberately uses a different folder, file, and row than the demo so that
 #: copying it verbatim would obviously be wrong.
+#:
+#: It names no sheet, also deliberately. An earlier version listed the workbook's
+#: sheets and then wrote a sheet name into the next step anyway; a live run copied
+#: that shape, invented a sheet name the workbook did not have, and the task died
+#: on it. Omitting the parameter is the part the model should imitate.
 _FEW_SHOT_USER = (
     "get the shipped unit count for part GX-1 out of supplier_invoice.pdf and "
     "record it against that part in inventory.xlsx"
@@ -106,21 +130,12 @@ _FEW_SHOT_ASSISTANT = json.dumps(
                 "expected_result": {"contains": "shipped"},
             },
             {
-                "step_key": "list_sheets",
-                "type": "spreadsheet.list_sheets",
-                "target": "Documents/inventory.xlsx",
-                "description": "See which sheets the workbook has.",
-                "parameters": {},
-                "depends_on": ["read_source"],
-                "expected_result": {"contains": "sheet names"},
-            },
-            {
                 "step_key": "read_layout",
                 "type": "spreadsheet.read_range",
                 "target": "Documents/inventory.xlsx",
                 "description": "Look at the sheet to find the part's row.",
-                "parameters": {"sheet": "Stock", "range": "A1:F30"},
-                "depends_on": ["list_sheets"],
+                "parameters": {"range": "A1:F30"},
+                "depends_on": ["read_source"],
                 "expected_result": {"contains": "the part identifier"},
             },
             {
@@ -129,7 +144,6 @@ _FEW_SHOT_ASSISTANT = json.dumps(
                 "target": "Documents/inventory.xlsx",
                 "description": "Record the unit count against the part.",
                 "parameters": {
-                    "sheet": "Stock",
                     "cell": "D7",
                     "value": {
                         "$ref": "read_source.evidence.text",
@@ -155,15 +169,24 @@ Worked example. For the request:
   {_FEW_SHOT_USER}
 the correct and complete plan is exactly:
 {_FEW_SHOT_ASSISTANT}
-That example shows the FORM of a plan on an unrelated task. Its folder, file names,
-sheet name and cell came from that workbook's own layout and are not defaults —
-reuse none of them. Take only the structure: read the source, look at the target's
-layout, then write with a $ref bound to the reading step.
+That example shows the FORM of a plan on an unrelated task. Its folder, file names
+and cell came from that workbook's own layout and are not defaults — reuse none of
+them. It names no sheet, which is what to copy. Take only the structure: read the
+source, look at the target's layout, then write with a $ref bound to the reading
+step.
 """
 
 #: Initial attempt plus repair attempts. Each repair re-prompts with the bounded
 #: validation error rather than blindly resampling.
 MAX_PLANNING_ATTEMPTS = 3
+
+#: How many of those attempts may be spent repairing a SEMANTIC rejection (a
+#: read-only plan for a request that asked for a change, or a path/extension
+#: problem with no unambiguous correction), as opposed to a schema failure.
+#: Bounded separately and deliberately small: a model that has twice returned a
+#: plan that cannot satisfy the goal is not going to get there on a third try,
+#: and failing closed quickly beats stalling the user.
+MAX_SEMANTIC_REPAIR_ATTEMPTS = 2
 
 
 _FENCE_PATTERN = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
@@ -258,12 +281,37 @@ class OllamaPlanner:
 
         minimum_actions = minimum_action_count(request.text)
         last_error: Exception | None = None
+        semantic_rejections = 0
         for attempt in range(MAX_PLANNING_ATTEMPTS):
             content = self._chat(messages, minimum_actions)
             try:
-                return DraftPlan.model_validate_json(extract_json_object(content))
+                draft = DraftPlan.model_validate_json(extract_json_object(content))
+                # Mechanical mistakes with one right answer are corrected here
+                # rather than sent back to the model; only what is left over is
+                # worth another turn.
+                draft, corrections = correct_action_families(draft)
+                for correction in corrections:
+                    _LOGGER.info(
+                        "plan_revised: corrected action family for %s",
+                        correction.describe(),
+                        extra={
+                            "event": "plan_revised",
+                            "outcome": "action_family_corrected",
+                            "step_key": correction.step_key,
+                            "requested_type": correction.previous,
+                            "corrected_type": correction.corrected,
+                        },
+                    )
+                problems = find_recoverable_problems(draft, request.text)
+                if problems:
+                    raise RecoverablePlanError("\n".join(problems))
+                return draft
             except (ValidationError, ValueError) as exc:
                 last_error = exc
+                if isinstance(exc, RecoverablePlanError):
+                    semantic_rejections += 1
+                    if semantic_rejections > MAX_SEMANTIC_REPAIR_ATTEMPTS:
+                        break
                 if attempt == MAX_PLANNING_ATTEMPTS - 1:
                     break
                 # Feed the bounded validation error back so the next attempt is a

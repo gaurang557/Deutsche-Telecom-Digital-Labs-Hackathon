@@ -32,6 +32,19 @@ lives in `action.parameters`, e.g. {"sheet": "Data"}, {"cell": "B7"},
 defaults to the active/first sheet. Cell/range references are the usual A1-style
 strings and are validated (fail closed on a malformed reference).
 
+SHEET RESOLUTION (why it is lenient, and exactly how far)
+--------------------------------------------------------
+A caller cannot always know a workbook's sheet names before opening it, and a
+plan that names a sheet it never observed used to fail the whole task. So
+`resolve_sheet_name` resolves the requested name deterministically — no
+guessing, no model judgement — in this order: exact match, then match ignoring
+surrounding whitespace and letter case, then the workbook's only sheet when it
+has exactly one. A name matching nothing in a workbook that has SEVERAL sheets
+is still `sheet_not_found`, listing what is available: picking one of several
+could silently write to the wrong place. Any resolution that changed the
+requested name is reported as evidence (`requested_sheet` / `sheet_substituted`)
+so the substitution is auditable instead of invisible.
+
 data_only TRADE-OFF (why reads use data_only=True, writes use data_only=False)
 ------------------------------------------------------------------------------
 openpyxl can load a workbook two ways:
@@ -73,6 +86,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +145,28 @@ def _normalize_value(value: Any) -> Any:
 def _is_empty(value: Any) -> bool:
     """A cell counts as empty when it holds nothing or an empty string."""
     return value is None or (isinstance(value, str) and value == "")
+
+
+def resolve_sheet_name(sheet_names: Sequence[str], requested: str) -> str | None:
+    """Map a non-empty requested sheet name onto a sheet the workbook has.
+
+    Returns the existing sheet name to use, or None when the request cannot be
+    satisfied without guessing. An absent request is the caller's business: it
+    means "the active sheet" and never reaches here.
+
+    The order below is fixed and deterministic (see the module's SHEET
+    RESOLUTION note). Shared with `verification/spreadsheet_verifiers.py` so a
+    write and its independent re-read always agree on which sheet was meant.
+    """
+    if requested in sheet_names:
+        return requested
+    wanted = requested.strip().casefold()
+    for name in sheet_names:
+        if name.strip().casefold() == wanted:
+            return name
+    if len(sheet_names) == 1:
+        return sheet_names[0]
+    return None
 
 
 class SpreadsheetExecutor(BaseExecutor):
@@ -192,16 +228,37 @@ class SpreadsheetExecutor(BaseExecutor):
     def _resolve_sheet(self, wb: Any, sheet_name: Any) -> tuple[Any, ExecutorResult | None]:
         """Pick the target worksheet, defaulting to the active/first sheet.
 
-        A named sheet that doesn't exist fails closed with `sheet_not_found`.
+        An absent or blank `sheet` means the active/first sheet. A requested name
+        goes through `resolve_sheet_name`; one that cannot be resolved without
+        guessing still fails closed with `sheet_not_found`.
         """
         if sheet_name is None:
             return wb.active, None
-        if not isinstance(sheet_name, str) or sheet_name not in wb.sheetnames:
+        requested = sheet_name if isinstance(sheet_name, str) else str(sheet_name)
+        if not requested.strip():
+            return wb.active, None
+        title = resolve_sheet_name(wb.sheetnames, requested)
+        if title is None:
             return None, _err(
                 ERR_SHEET_NOT_FOUND,
                 f"Sheet {sheet_name!r} not found (available: {wb.sheetnames})",
             )
-        return wb[sheet_name], None
+        return wb[title], None
+
+    @staticmethod
+    def _sheet_evidence(action: Action, ws: Any) -> dict[str, Any]:
+        """Evidence naming the sheet used, and the requested name if it differed.
+
+        A substitution that left no trace would be indistinguishable from the
+        caller having named the sheet correctly, so it is reported here for the
+        audit trail rather than applied silently.
+        """
+        evidence: dict[str, Any] = {"sheet": ws.title}
+        requested = action.parameters.get("sheet")
+        if isinstance(requested, str) and requested.strip() and requested != ws.title:
+            evidence["requested_sheet"] = requested
+            evidence["sheet_substituted"] = True
+        return evidence
 
     # ── read-only operations ────────────────────────────────────────────────
     def _list_sheets(self, action: Action) -> ExecutorResult:
@@ -233,7 +290,7 @@ class SpreadsheetExecutor(BaseExecutor):
                 success=True,
                 evidence={
                     "path": str(path),
-                    "sheet": ws.title,
+                    **self._sheet_evidence(action, ws),
                     "max_row": max_row,
                     "max_col": max_col,
                     "dimensions": dimensions,
@@ -261,7 +318,12 @@ class SpreadsheetExecutor(BaseExecutor):
             value = _normalize_value(ws[cell_ref].value)
             return ExecutorResult(
                 success=True,
-                evidence={"path": str(path), "sheet": ws.title, "cell": cell_ref, "value": value},
+                evidence={
+                    "path": str(path),
+                    **self._sheet_evidence(action, ws),
+                    "cell": cell_ref,
+                    "value": value,
+                },
             )
         finally:
             wb.close()
@@ -306,7 +368,7 @@ class SpreadsheetExecutor(BaseExecutor):
                 success=True,
                 evidence={
                     "path": str(path),
-                    "sheet": ws.title,
+                    **self._sheet_evidence(action, ws),
                     "range": range_ref,
                     "values": values,
                     "rows": len(values),
@@ -380,7 +442,7 @@ class SpreadsheetExecutor(BaseExecutor):
                 success=True,
                 evidence={
                     "path": str(path),
-                    "sheet": ws.title,
+                    **self._sheet_evidence(action, ws),
                     "cell": cell_ref,
                     "value": _normalize_value(value),
                     "previous": previous,

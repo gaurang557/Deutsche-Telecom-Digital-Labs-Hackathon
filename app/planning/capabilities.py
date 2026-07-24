@@ -23,10 +23,12 @@ so "create a new spreadsheet" is a supported request.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from app.schemas import StructuredActionType
+from app.structured_actions import FAMILY_EXTENSIONS, action_mutates
 
 #: Determiners the model tends to put between a create verb and the artifact.
 _DETERMINERS = r"(?:me\s+)?(?:(?:a|an|the|another|some|new|blank|empty|fresh)\s+)*"
@@ -67,14 +69,10 @@ _UNSUPPORTED_CREATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
-#: Extensions each structured action family is able to operate on. ``file.*`` is
-#: deliberately absent: it is extension-agnostic by design.
-_FAMILY_EXTENSIONS: dict[str, frozenset[str]] = {
-    "spreadsheet": frozenset({".xlsx"}),
-    "pdf": frozenset({".pdf"}),
-    "document": frozenset({".docx"}),
-    "presentation": frozenset({".pptx"}),
-}
+#: Owned by ``app.structured_actions`` so the mismatch check below and the
+#: deterministic family correction there can never disagree about which
+#: extension belongs to which family.
+_FAMILY_EXTENSIONS = FAMILY_EXTENSIONS
 
 #: Extensions whose bytes are a container, not text. Reading one with
 #: `file.read_text` yields mojibake, and writing one with `file.write_text`
@@ -103,6 +101,54 @@ def detect_unsupported_request(text: str) -> str | None:
         if pattern.search(text):
             return refusal
     return None
+
+
+#: Verbs that mean the user wants something on disk to be different afterwards.
+#: Deliberately base forms only: a transcript of a spoken instruction is
+#: imperative ("update slide 3", "fill in the revenue column"), while inflected
+#: forms show up in descriptive noun phrases ("the updated report") where no
+#: mutation is being asked for. Kept bounded and conservative — see
+#: `plan_omits_required_mutation` for why a false positive is cheap and a false
+#: negative is not.
+_MUTATION_VERBS = (
+    "update",
+    "change",
+    "replace",
+    "set",
+    "fill",
+    "write",
+    "put",
+    "add",
+    "insert",
+    "rename",
+    "move",
+    "copy",
+    "delete",
+    "remove",
+    "save",
+    "create",
+    "organize",
+    "organise",
+    "sort",
+    "record",
+    "populate",
+    "append",
+)
+
+_MUTATION_INTENT_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(_MUTATION_VERBS)})\b",
+    re.IGNORECASE,
+)
+
+
+def detect_mutation_intent(text: str) -> bool:
+    """Whether the request asks for something to be changed, not just read.
+
+    Deterministic and text-only: it never inspects a plan and never decides
+    permission, risk, or authority. Its single consumer may only use it to
+    REJECT a plan that changes nothing, never to add or upgrade an action.
+    """
+    return _MUTATION_INTENT_PATTERN.search(text) is not None
 
 
 def _home() -> Path | None:
@@ -186,3 +232,31 @@ def find_extension_family_mismatch(
                 f"proposed {candidate!r}"
             )
     return None
+
+
+def plan_omits_required_mutation(request_text: str, action_types: Iterable[Any]) -> str | None:
+    """Return a message when a change was asked for and the plan changes nothing.
+
+    Observed live and far worse than a failure: asked to read a document and
+    update a slide, the planner emitted two reads, both succeeded, and the task
+    was reported as "everything completed successfully" while the slide was
+    untouched. A plan of pure reads can never satisfy a request to change
+    something, so it is rejected here and sent back for repair.
+
+    SAFETY: this function only ever returns a refusal message. It cannot add,
+    synthesise, authorise, or upgrade an action, and it does not touch policy,
+    confirmation, or verification. The worst outcome of a false positive is one
+    wasted repair attempt followed by a clean, honest failure — never a change
+    in privilege. Mutation intent is therefore read conservatively from the
+    user's own words only.
+    """
+    if not detect_mutation_intent(request_text):
+        return None
+    if any(action_mutates(action_type) for action_type in action_types):
+        return None
+    return (
+        "The request asks for something to be changed, but every step in this "
+        "plan only reads. Add the step that actually performs the change "
+        "(writing the cell, replacing the text, or moving the file), keeping "
+        "the reading steps it depends on."
+    )

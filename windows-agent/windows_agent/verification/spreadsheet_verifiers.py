@@ -19,7 +19,10 @@ INDEPENDENCE
 The verifier opens the workbook itself (it does not trust the executor's live
 handle) and takes the intended path, sheet, cell, and value only from the
 authorized Action. ExecutorResult evidence is never accepted as the expectation,
-so a buggy/lying executor cannot redefine what counts as success.
+so a buggy/lying executor cannot redefine what counts as success. The requested
+sheet name is mapped onto a real sheet with the executor's own deterministic
+`resolve_sheet_name` — shared code, not shared trust: the expectation still comes
+from the Action, and both sides therefore agree on which sheet was meant.
 
 NUMBER-vs-STRING COMPARISON
 ---------------------------
@@ -43,7 +46,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from ..contracts import Action, ExecutorResult, VerificationResult, VerificationStatus
-from ..executors.spreadsheet_ops import _normalize_value
+from ..executors.spreadsheet_ops import _normalize_value, resolve_sheet_name
 from .base import Verifier
 
 
@@ -95,10 +98,14 @@ class SpreadsheetWriteCellVerifier(Verifier):
         except Exception as exc:
             return _failed(method, expected, None, f"Cannot re-open workbook: {exc}")
         try:
-            if sheet_name is not None and sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-            else:
-                ws = wb.active
+            ws = wb.active
+            if isinstance(sheet_name, str) and sheet_name.strip():
+                # Same deterministic rule the executor applied, so a write that
+                # resolved onto another sheet is re-read on that same sheet
+                # instead of being reported as a mismatch.
+                resolved = resolve_sheet_name(wb.sheetnames, sheet_name)
+                if resolved is not None:
+                    ws = wb[resolved]
             title = ws.title
             observed = _normalize_value(ws[cell_ref].value)
         finally:
