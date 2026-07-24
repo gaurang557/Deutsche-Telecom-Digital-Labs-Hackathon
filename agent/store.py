@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import sys
 import threading
 from datetime import datetime
 
@@ -25,12 +26,20 @@ _HISTORY_ADAPTER = TypeAdapter(list[HistoryEntry])
 
 _connection: sqlite3.Connection | None = None
 
-# Guards every read and write below. sqlite3, when opened with
-# check_same_thread=False, will let more than one thread use the same
-# connection object -- but it does NOT make that safe on its own. This
-# lock is what actually serialises access; check_same_thread=False just
-# turns off sqlite3's refusal to try. Needed here because the voice
-# thread and the executor thread both write to this store.
+# Guards every read and write below, WITHIN this process. sqlite3, when
+# opened with check_same_thread=False, will let more than one thread use
+# the same connection object -- but it does NOT make that safe on its
+# own. This lock is what actually serialises access across the voice
+# thread and the executor thread; check_same_thread=False just turns off
+# sqlite3's refusal to try.
+#
+# It does NOT help across processes -- the FastAPI process and the agent
+# loop process each have their own lock in their own memory, so from
+# SQLite's point of view they're just two independent writers. That's
+# what the WAL + busy_timeout pragmas below are for: WAL lets readers
+# and a writer proceed concurrently instead of blocking on each other,
+# and busy_timeout makes a writer that shows up mid-write retry for a
+# while instead of failing instantly with "database is locked".
 _lock = threading.Lock()
 
 
@@ -46,6 +55,16 @@ def connect(db_path: str) -> None:
         if _connection is not None:
             _connection.close()
         _connection = sqlite3.connect(db_path, check_same_thread=False)
+        # WAL: readers don't block the writer and the writer doesn't
+        # block readers -- needed now that the FastAPI process and the
+        # agent loop process both hold open connections to this file.
+        # (No-op on ":memory:" databases -- there's no file to write a
+        # WAL alongside, so sqlite keeps them in "memory" mode regardless.)
+        _connection.execute("PRAGMA journal_mode=WAL")
+        # If a write still can't get the lock immediately (WAL allows
+        # concurrent reads, but only one writer at a time), retry for up
+        # to 5s instead of raising "database is locked" right away.
+        _connection.execute("PRAGMA busy_timeout=5000")
         _connection.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
@@ -195,26 +214,42 @@ def append_audit_event(event: AuditEvent) -> None:
     defence, even though every caller should already have redacted its
     data before constructing the AuditEvent (that's what the field name
     is for).
+
+    busy_timeout (see connect()) means a lock conflict with the other
+    process normally resolves itself by retrying, quietly, inside
+    sqlite3 -- but if it's still locked after 5s, or any other backend
+    error happens, this catches it rather than crashing the caller's
+    whole request. It does NOT re-raise, so the event is genuinely
+    dropped -- but it's dropped LOUDLY, to stderr, so a drop is visible
+    during testing/demo instead of just silently never appearing in the
+    audit trail with no trace of why.
     """
     safe_details = redact_sensitive_data(event.details_redacted)
     conn = _require_connection()
-    with _lock:
-        conn.execute(
-            """
-            INSERT INTO audit_events
-                (timestamp, request_id, action_id, event_type, rule_id, details_json)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.timestamp.isoformat(),
-                event.request_id,
-                event.action_id,
-                event.event_type,
-                event.rule_id,
-                json.dumps(safe_details),
-            ),
+    try:
+        with _lock:
+            conn.execute(
+                """
+                INSERT INTO audit_events
+                    (timestamp, request_id, action_id, event_type, rule_id, details_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.timestamp.isoformat(),
+                    event.request_id,
+                    event.action_id,
+                    event.event_type,
+                    event.rule_id,
+                    json.dumps(safe_details),
+                ),
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        print(
+            f"[agent.store] DROPPED audit event: request_id={event.request_id} "
+            f"event_type={event.event_type} action_id={event.action_id} error={exc!r}",
+            file=sys.stderr,
         )
-        conn.commit()
 
 
 def get_audit_trail(request_id: str) -> list[AuditEvent]:
