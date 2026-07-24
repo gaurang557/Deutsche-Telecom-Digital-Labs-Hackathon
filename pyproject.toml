@@ -14,12 +14,15 @@ dependencies = [
     "faster-whisper>=1.0,<2.0",
     "av>=12.0",
     "python-multipart>=0.0.9",
+    "pyautogui>=0.9.54,<1.0",
+    "send2trash>=1.8,<2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "httpx>=0.28,<1.0",
     "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25,<2.0",
     "ruff>=0.9,<1.0",
 ]
 
@@ -28,6 +31,7 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100

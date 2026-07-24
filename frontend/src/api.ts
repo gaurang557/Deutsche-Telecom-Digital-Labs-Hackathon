@@ -25,6 +25,19 @@ export interface PlanningResponse {
   } | null;
 }
 
+export interface ActionResult {
+  action_id: string;
+  status: "succeeded" | "failed" | "blocked" | "cancelled";
+  evidence: Record<string, unknown>;
+  error: string | null;
+}
+
+export interface PlanExecutionResponse {
+  plan_id: string;
+  status: "completed" | "failed" | "blocked" | "cancelled";
+  results: ActionResult[];
+}
+
 /** Upload a recorded audio clip and get back the transcribed TaskRequest. */
 export async function transcribeAudio(blob: Blob): Promise<TaskRequest> {
   const form = new FormData();
@@ -54,4 +67,22 @@ export async function createPlan(
     throw new Error(`Planning failed (HTTP ${response.status})`);
   }
   return (await response.json()) as PlanningResponse;
+}
+
+export async function executePlan(
+  planId: string,
+  approvedActionIds: string[],
+): Promise<PlanExecutionResponse> {
+  const response = await fetch(`/api/v1/plans/${planId}/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved_action_ids: approvedActionIds }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `Execution failed (HTTP ${response.status})`);
+  }
+  return (await response.json()) as PlanExecutionResponse;
 }

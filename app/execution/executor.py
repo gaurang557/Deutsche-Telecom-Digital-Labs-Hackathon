@@ -1,0 +1,262 @@
+import asyncio
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from app.schemas import (
+    Action,
+    ActionPlan,
+    ActionResult,
+    ActionStatus,
+    ActionType,
+    ExecutionStatus,
+    PlanExecutionResponse,
+)
+
+_UNSUPPORTED_EXTERNAL_ACTIONS = {
+    ActionType.SEND_MESSAGE,
+    ActionType.SUBMIT_FORM,
+    ActionType.PUBLISH_CONTENT,
+}
+_WINDOWS_APPLICATIONS = {
+    "calculator": "calc.exe",
+    "file explorer": "explorer.exe",
+    "notepad": "notepad.exe",
+    "paint": "mspaint.exe",
+    "text editor": "notepad.exe",
+}
+_MACOS_APPLICATIONS = {
+    "notepad": "TextEdit",
+    "text editor": "TextEdit",
+}
+
+
+class DesktopExecutor:
+    """Execute the allow-listed MVP actions on macOS and Windows."""
+
+    async def execute_plan(
+        self,
+        plan: ActionPlan,
+        approved_action_ids: set[UUID],
+    ) -> PlanExecutionResponse:
+        results: list[ActionResult] = []
+        succeeded: set[UUID] = set()
+
+        for action in plan.actions:
+            if any(dependency not in succeeded for dependency in action.depends_on):
+                results.append(
+                    ActionResult(
+                        action_id=action.action_id,
+                        status=ActionStatus.BLOCKED,
+                        error="A dependency did not complete successfully",
+                    )
+                )
+                return PlanExecutionResponse(
+                    plan_id=plan.plan_id,
+                    status=ExecutionStatus.BLOCKED,
+                    results=results,
+                )
+
+            if action.requires_confirmation and action.action_id not in approved_action_ids:
+                results.append(
+                    ActionResult(
+                        action_id=action.action_id,
+                        status=ActionStatus.BLOCKED,
+                        error="Explicit user confirmation is required",
+                    )
+                )
+                return PlanExecutionResponse(
+                    plan_id=plan.plan_id,
+                    status=ExecutionStatus.BLOCKED,
+                    results=results,
+                )
+
+            result = await asyncio.to_thread(self._execute_action, action)
+            results.append(result)
+            if result.status is not ActionStatus.SUCCEEDED:
+                return PlanExecutionResponse(
+                    plan_id=plan.plan_id,
+                    status=ExecutionStatus.FAILED,
+                    results=results,
+                )
+            succeeded.add(action.action_id)
+
+        return PlanExecutionResponse(
+            plan_id=plan.plan_id,
+            status=ExecutionStatus.COMPLETED,
+            results=results,
+        )
+
+    def _execute_action(self, action: Action) -> ActionResult:
+        try:
+            if action.type in _UNSUPPORTED_EXTERNAL_ACTIONS:
+                return self._unsupported(action)
+            evidence = self._dispatch(action)
+            return ActionResult(
+                action_id=action.action_id,
+                status=ActionStatus.SUCCEEDED,
+                evidence=evidence,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return ActionResult(
+                action_id=action.action_id,
+                status=ActionStatus.FAILED,
+                error=str(exc),
+            )
+
+    def _dispatch(self, action: Action) -> dict[str, Any]:
+        handlers = {
+            ActionType.OPEN_APPLICATION: self._open_application,
+            ActionType.FOCUS_APPLICATION: self._focus_application,
+            ActionType.CLICK_ELEMENT: self._click_element,
+            ActionType.TYPE_TEXT: self._type_text,
+            ActionType.PRESS_KEY: self._press_key,
+            ActionType.READ_FILE: self._read_file,
+            ActionType.CREATE_FILE: self._create_file,
+            ActionType.MOVE_FILE: self._move_file,
+            ActionType.OVERWRITE_FILE: self._overwrite_file,
+            ActionType.DELETE_FILE: self._delete_file,
+        }
+        handler = handlers.get(action.type)
+        if handler is None:
+            raise ValueError(f"Unsupported action type: {action.type}")
+        return handler(action)
+
+    @staticmethod
+    def _open_application(action: Action) -> dict[str, Any]:
+        system = platform.system()
+        if system == "Darwin":
+            application = _MACOS_APPLICATIONS.get(
+                action.target.casefold(),
+                action.target,
+            )
+            subprocess.run(["open", "-a", application], check=True)
+        elif system == "Windows":
+            if not hasattr(os, "startfile"):
+                raise RuntimeError("Windows application launcher is unavailable")
+            application = _WINDOWS_APPLICATIONS.get(
+                action.target.casefold(),
+                action.target,
+            )
+            os.startfile(application)  # type: ignore[attr-defined]
+        else:
+            raise RuntimeError(f"Desktop execution is unsupported on {system}")
+        return {"application": application, "launched": True}
+
+    @staticmethod
+    def _focus_application(action: Action) -> dict[str, Any]:
+        system = platform.system()
+        if system == "Darwin":
+            safe_name = action.target.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e", f'tell application "{safe_name}" to activate'],
+                check=True,
+            )
+        elif system == "Windows":
+            import pygetwindow
+
+            windows = pygetwindow.getWindowsWithTitle(action.target)
+            if not windows:
+                raise RuntimeError(f"No window found for {action.target!r}")
+            windows[0].activate()
+        else:
+            raise RuntimeError(f"Desktop execution is unsupported on {system}")
+        return {"application": action.target, "focused": True}
+
+    @staticmethod
+    def _click_element(action: Action) -> dict[str, Any]:
+        import pyautogui
+
+        x = action.parameters.get("x")
+        y = action.parameters.get("y")
+        if not isinstance(x, int) or not isinstance(y, int):
+            raise ValueError("click_element requires integer x and y parameters")
+        pyautogui.click(x=x, y=y)
+        return {"clicked": {"x": x, "y": y}}
+
+    @staticmethod
+    def _type_text(action: Action) -> dict[str, Any]:
+        import pyautogui
+
+        text = action.parameters.get("text")
+        if not isinstance(text, str):
+            raise ValueError("type_text requires a text parameter")
+        pyautogui.write(text, interval=0.02)
+        return {"characters_typed": len(text)}
+
+    @staticmethod
+    def _press_key(action: Action) -> dict[str, Any]:
+        import pyautogui
+
+        keys = action.parameters.get("keys", action.parameters.get("key"))
+        if isinstance(keys, str):
+            keys = [keys]
+        if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+            raise ValueError("press_key requires key or keys parameters")
+        pyautogui.hotkey(*keys)
+        return {"keys_pressed": keys}
+
+    @staticmethod
+    def _read_file(action: Action) -> dict[str, Any]:
+        path = Path(action.target).expanduser()
+        content = path.read_text(encoding="utf-8")
+        return {"path": str(path), "content": content, "size": len(content)}
+
+    @staticmethod
+    def _create_file(action: Action) -> dict[str, Any]:
+        path = Path(action.target).expanduser()
+        if path.exists():
+            raise RuntimeError("Refusing to replace an existing file with create_file")
+        content = action.parameters.get("content", "")
+        if not isinstance(content, str):
+            raise ValueError("create_file content must be text")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return {"path": str(path), "created": True}
+
+    @staticmethod
+    def _move_file(action: Action) -> dict[str, Any]:
+        source = Path(action.target).expanduser()
+        destination_value = action.parameters.get("destination")
+        if not isinstance(destination_value, str):
+            raise ValueError("move_file requires a destination parameter")
+        destination = Path(destination_value).expanduser()
+        if destination.exists():
+            raise RuntimeError("Refusing to overwrite the move destination")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(destination))
+        return {"source": str(source), "destination": str(destination)}
+
+    @staticmethod
+    def _overwrite_file(action: Action) -> dict[str, Any]:
+        path = Path(action.target).expanduser()
+        content = action.parameters.get("content")
+        if not isinstance(content, str):
+            raise ValueError("overwrite_file requires text content")
+        path.write_text(content, encoding="utf-8")
+        return {"path": str(path), "overwritten": True}
+
+    @staticmethod
+    def _delete_file(action: Action) -> dict[str, Any]:
+        from send2trash import send2trash
+
+        path = Path(action.target).expanduser()
+        if not path.is_file():
+            raise ValueError("delete_file target must be an existing file")
+        send2trash(str(path))
+        return {"path": str(path), "moved_to_trash": True}
+
+    @staticmethod
+    def _unsupported(action: Action) -> ActionResult:
+        return ActionResult(
+            action_id=action.action_id,
+            status=ActionStatus.BLOCKED,
+            error=(
+                f"{action.type.value} requires a dedicated application adapter "
+                "and is not enabled"
+            ),
+        )

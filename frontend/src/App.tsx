@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { createPlan, type PlanningResponse } from "./api";
+import {
+  createPlan,
+  executePlan,
+  type PlanExecutionResponse,
+  type PlanningResponse,
+} from "./api";
 import { useVoiceCapture } from "./useVoiceCapture";
 
 interface VoiceHealth {
@@ -24,6 +29,10 @@ export default function App() {
   const [planningResult, setPlanningResult] =
     useState<PlanningResponse | null>(null);
   const [planningError, setPlanningError] = useState<string | null>(null);
+  const [executing, setExecuting] = useState(false);
+  const [executionResult, setExecutionResult] =
+    useState<PlanExecutionResponse | null>(null);
+  const [executionError, setExecutionError] = useState<string | null>(null);
   const { status, result, error, start, stop } = useVoiceCapture();
 
   const recording = status === "recording";
@@ -43,6 +52,8 @@ export default function App() {
     setPlanning(true);
     setPlanningError(null);
     setPlanningResult(null);
+    setExecutionResult(null);
+    setExecutionError(null);
 
     createPlan(result)
       .then((response) => {
@@ -88,6 +99,40 @@ export default function App() {
 
   const lowConfidence =
     result?.confidence != null && result.confidence < LOW_CONFIDENCE;
+
+  const approveAndExecute = async () => {
+    const plan = planningResult?.plan;
+    if (!plan) return;
+
+    const riskyActions = plan.actions.filter(
+      (action) => action.requires_confirmation,
+    );
+    const warning =
+      riskyActions.length > 0
+        ? `\n\nThe following actions require explicit confirmation:\n${riskyActions
+            .map((action) => `• ${action.type}: ${action.target}`)
+            .join("\n")}`
+        : "";
+    if (!window.confirm(`Execute this plan?\n\n${plan.summary}${warning}`)) {
+      return;
+    }
+
+    setExecuting(true);
+    setExecutionError(null);
+    try {
+      const response = await executePlan(
+        plan.plan_id,
+        riskyActions.map((action) => action.action_id),
+      );
+      setExecutionResult(response);
+    } catch (reason: unknown) {
+      setExecutionError(
+        reason instanceof Error ? reason.message : "Execution failed",
+      );
+    } finally {
+      setExecuting(false);
+    }
+  };
 
   return (
     <main className="app">
@@ -154,6 +199,31 @@ export default function App() {
               <li key={action.action_id}>
                 {action.type}: {action.target}
                 {action.requires_confirmation && " · confirmation required"}
+              </li>
+            ))}
+          </ol>
+          {!executionResult && (
+            <button
+              type="button"
+              onClick={approveAndExecute}
+              disabled={executing}
+            >
+              {executing ? "Executing…" : "Approve and execute"}
+            </button>
+          )}
+        </div>
+      )}
+      {executionError && <p className="error">{executionError}</p>}
+      {executionResult && (
+        <div className="transcript">
+          <p className="transcript__text">
+            Execution {executionResult.status}
+          </p>
+          <ol>
+            {executionResult.results.map((action) => (
+              <li key={action.action_id}>
+                {action.status}
+                {action.error ? ` · ${action.error}` : ""}
               </li>
             ))}
           </ol>

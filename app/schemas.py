@@ -133,3 +133,22 @@ class ActionResult(BaseModel):
     status: ActionStatus
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+
+
+class ExecutePlanRequest(BaseModel):
+    """Explicit user approval accompanying an execution request."""
+
+    approved_action_ids: set[UUID] = Field(default_factory=set)
+
+
+class ExecutionStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+
+
+class PlanExecutionResponse(BaseModel):
+    plan_id: UUID
+    status: ExecutionStatus
+    results: list[ActionResult]

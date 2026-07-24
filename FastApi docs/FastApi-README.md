@@ -43,9 +43,19 @@ action UUIDs, ordered dependencies, deterministic risk classification, and
 confirmation requirements. Control commands such as `pause`, `resume`, and
 `cancel` are detected before calling Ollama.
 
-Planning does not execute desktop actions. Pass the validated `plan` object to
-the team's execution engine, which should return an `ActionResult` for each
-action and verify `expected_result` before advancing.
+After planning, the UI asks the user to approve execution. Actions marked as
+requiring confirmation are listed explicitly in the prompt. The approved plan
+is submitted once to:
+
+```text
+POST /api/v1/plans/{plan_id}/execute
+```
+
+The MVP executor supports native application launch on macOS and Windows,
+PyAutoGUI keyboard/mouse input, local text-file operations, and recoverable file
+deletion through the operating system trash. Sending messages, submitting
+forms, and publishing remain blocked until dedicated application adapters are
+implemented.
 
 ## Test
 
