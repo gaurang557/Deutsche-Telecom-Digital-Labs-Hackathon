@@ -6,7 +6,8 @@
 `pdf_ops.py` is the read-only PDF executor (the `pdf.*` vocabulary, Milestone 3).
 `spreadsheet_ops.py` is the `.xlsx` spreadsheet executor (the `spreadsheet.*`
 vocabulary, Milestone 4). `document_ops.py` is the `.docx` Word-document executor
-(the `document.*` vocabulary, Milestone 6). Presentation executors and the
+(the `document.*` vocabulary, Milestone 6). `presentation_ops.py` is the `.pptx`
+PowerPoint executor (the `presentation.*` vocabulary, Milestone 7). The
 platform-specific `desktop/` adapters land in later milestones.
 """
 
@@ -18,6 +19,11 @@ from .document_ops import (
 )
 from .file_ops import FILE_ACTION_TYPES, FileExecutor, register_file_executor
 from .pdf_ops import PDF_ACTION_TYPES, PdfExecutor, register_pdf_executor
+from .presentation_ops import (
+    PRESENTATION_ACTION_TYPES,
+    PresentationExecutor,
+    register_presentation_executor,
+)
 from .spreadsheet_ops import (
     SPREADSHEET_ACTION_TYPES,
     SpreadsheetExecutor,
@@ -38,4 +44,7 @@ __all__ = [
     "DocumentExecutor",
     "DOCUMENT_ACTION_TYPES",
     "register_document_executor",
+    "PresentationExecutor",
+    "PRESENTATION_ACTION_TYPES",
+    "register_presentation_executor",
 ]
