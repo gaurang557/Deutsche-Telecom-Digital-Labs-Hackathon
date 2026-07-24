@@ -1,9 +1,17 @@
 export interface TaskRequest {
   request_id: string;
   text: string;
-  source: string;
+  source: "speech" | "text";
   confidence: number | null;
   received_at: string;
+}
+
+export interface PlanRequest {
+  text: string;
+  source: "speech" | "text";
+  request_id?: string;
+  confidence?: number | null;
+  received_at?: string;
 }
 
 export interface PlannedAction {
@@ -11,6 +19,7 @@ export interface PlannedAction {
   sequence: number;
   type: string;
   target: string;
+  description: string;
   risk: "low" | "medium" | "high";
   requires_confirmation: boolean;
 }
@@ -56,7 +65,7 @@ export async function transcribeAudio(blob: Blob): Promise<TaskRequest> {
 
 /** Send a transcribed request to the validated Ollama planning boundary. */
 export async function createPlan(
-  request: TaskRequest,
+  request: PlanRequest,
 ): Promise<PlanningResponse> {
   const response = await fetch("/api/v1/plans", {
     method: "POST",

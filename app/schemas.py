@@ -64,6 +64,7 @@ class DraftAction(BaseModel):
     step_key: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
     type: ActionType
     target: str = Field(min_length=1, max_length=500)
+    description: str = Field(min_length=1, max_length=300)
     parameters: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
     expected_result: dict[str, Any] = Field(default_factory=dict)
@@ -96,6 +97,7 @@ class Action(BaseModel):
     sequence: int = Field(ge=1)
     type: ActionType
     target: str
+    description: str = ""
     parameters: dict[str, Any]
     depends_on: list[UUID]
     risk: RiskLevel

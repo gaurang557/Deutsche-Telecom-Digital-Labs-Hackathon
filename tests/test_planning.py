@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.api.routes import get_planner
 from app.main import app
+from app.planning.normalizer import build_action_plan
 from app.schemas import DraftAction, DraftPlan, TaskRequest
 
 
@@ -28,12 +29,14 @@ def calculator_draft() -> DraftPlan:
                 step_key="open",
                 type="open_application",
                 target="Calculator",
+                description="I'll open Calculator.",
                 expected_result={"application": "Calculator", "state": "focused"},
             ),
             DraftAction(
                 step_key="type",
                 type="type_text",
                 target="Calculator",
+                description="I'll enter the calculation.",
                 parameters={"text": "25*4"},
                 depends_on=["open"],
                 expected_result={"screen_contains": "100"},
@@ -78,6 +81,7 @@ def test_destructive_action_is_classified_by_application() -> None:
                     step_key="delete",
                     type="delete_file",
                     target="/tmp/example.txt",
+                    description="I'll move the file to the Trash.",
                     expected_result={"file_exists": False},
                 )
             ],
@@ -118,12 +122,40 @@ def test_forward_dependency_is_rejected() -> None:
                     step_key="first",
                     type="click_element",
                     target="button",
+                    description="I'll select the button.",
                     depends_on=["second"],
                 ),
                 DraftAction(
                     step_key="second",
                     type="open_application",
                     target="Calculator",
+                    description="I'll open Calculator.",
                 ),
             ],
         )
+
+
+def test_unrequested_viewer_step_is_removed_from_file_open_plan() -> None:
+    request = TaskRequest(text="Open the latest PDF in Downloads")
+    draft = DraftPlan(
+        summary="I'll open the newest PDF for you.",
+        actions=[
+            DraftAction(
+                step_key="open_file",
+                type="open_file",
+                target="Downloads",
+                description="I'll find and open the newest PDF.",
+                parameters={"selection": "latest", "extension": ".pdf"},
+            ),
+            DraftAction(
+                step_key="focus_viewer",
+                type="focus_application",
+                target="Adobe Acrobat Reader",
+                description="I'll bring the PDF viewer into focus.",
+            ),
+        ],
+    )
+
+    plan = build_action_plan(request, draft)
+
+    assert [action.type for action in plan.actions] == ["open_file"]
