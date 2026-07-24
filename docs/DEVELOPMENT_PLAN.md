@@ -65,14 +65,17 @@ All developers build against these shared typed objects from the first 30 minute
 
 ```python
 TaskRequest(text, source, request_id)
-Action(type, target, parameters, risk, expected_result)
-PolicyDecision(outcome, rule_id, reason, confirmation_token=None)
-ActionResult(status, evidence, error=None)
+Action(action_id, task_id, sequence, type, target, parameters, expected_result, reason)
+PolicyDecision(outcome, risk_level, rule_id, reason, confirmation_token=None)
+ActionResult(action_id, task_id, status, evidence, verification=None, error=None)
 TaskState(status, current_step, plan, history)
-AuditEvent(timestamp, event_type, request_id, details_redacted)
+AuditEvent(timestamp, event_type, task_id, action_id, details_redacted)
 ```
 
 Use `pydantic` models and JSON-serialisable fields so components can be tested separately.
+`Action` deliberately has no risk field: deterministic policy assigns
+`PolicyDecision.risk_level`. Current execution and audit correlation uses
+`task_id` (plus `action_id` for action-level events), not `request_id`.
 
 ## 4. Functions to Implement
 

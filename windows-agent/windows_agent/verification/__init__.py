@@ -1,0 +1,58 @@
+"""Verification registry.
+
+After an executor runs, the dispatcher asks the VerificationRegistry to
+independently re-observe state and confirm the action actually did what was
+intended. `file_verifiers.py` covers the `file.*` actions (M2);
+`spreadsheet_verifiers.py` covers the modifying `spreadsheet.*` action (M4);
+`document_verifiers.py` covers the modifying `document.*` action (M6);
+`presentation_verifiers.py` covers the modifying `presentation.*` action (M7).
+Read-only actions register no verifier (→ SKIPPED).
+"""
+
+from .base import Verifier
+from .registry import VerificationRegistry
+from .document_verifiers import (
+    DOCUMENT_VERIFIERS,
+    DocumentReplaceTextVerifier,
+    register_document_verifiers,
+)
+from .file_verifiers import (
+    FILE_VERIFIERS,
+    FileCopyVerifier,
+    FileDeleteVerifier,
+    FileMkdirVerifier,
+    FileMoveVerifier,
+    FileWriteVerifier,
+    register_file_verifiers,
+)
+from .presentation_verifiers import (
+    PRESENTATION_VERIFIERS,
+    PresentationReplaceTextVerifier,
+    register_presentation_verifiers,
+)
+from .spreadsheet_verifiers import (
+    SPREADSHEET_VERIFIERS,
+    SpreadsheetWriteCellVerifier,
+    register_spreadsheet_verifiers,
+)
+
+__all__ = [
+    "Verifier",
+    "VerificationRegistry",
+    "FILE_VERIFIERS",
+    "FileCopyVerifier",
+    "FileMoveVerifier",
+    "FileWriteVerifier",
+    "FileMkdirVerifier",
+    "FileDeleteVerifier",
+    "register_file_verifiers",
+    "SPREADSHEET_VERIFIERS",
+    "SpreadsheetWriteCellVerifier",
+    "register_spreadsheet_verifiers",
+    "DOCUMENT_VERIFIERS",
+    "DocumentReplaceTextVerifier",
+    "register_document_verifiers",
+    "PRESENTATION_VERIFIERS",
+    "PresentationReplaceTextVerifier",
+    "register_presentation_verifiers",
+]
