@@ -13,7 +13,7 @@ from pathlib import Path
 
 from windows_agent.contracts import Action, ActionStatus, ExecutorResult, VerificationStatus
 from windows_agent.execution import ActionRegistry, Dispatcher
-from windows_agent.executors.file_ops import FileExecutor, register_file_executor
+from windows_agent.executors.file_ops import FileExecutor, register_file_executor, sha256_file
 from windows_agent.policy import AllowAllPolicy
 from windows_agent.verification import (
     FileCopyVerifier,
@@ -88,6 +88,46 @@ async def test_move_removes_source(tmp_path):
     assert res.success is True
     assert dst.read_text() == "data"
     assert not src.exists()
+
+
+async def test_move_literal_same_path_with_overwrite_preserves_contents(tmp_path):
+    ex = FileExecutor()
+    src = tmp_path / "same.txt"
+    src.write_text("keep me")
+    res = await ex.execute(
+        _action("file.move", src, {"destination": src, "overwrite": True})
+    )
+    assert res.success is False
+    assert res.error.code == "invalid_parameters"
+    assert src.read_text() == "keep me"
+
+
+async def test_move_resolved_equivalent_path_preserves_contents(tmp_path):
+    ex = FileExecutor()
+    src = tmp_path / "same.txt"
+    src.write_text("keep me")
+    (tmp_path / "subdir").mkdir()
+    equivalent = tmp_path / "subdir" / ".." / "same.txt"
+    res = await ex.execute(
+        _action("file.move", src, {"destination": equivalent, "overwrite": True})
+    )
+    assert res.success is False
+    assert res.error.code == "invalid_parameters"
+    assert src.read_text() == "keep me"
+
+
+async def test_move_overwrite_distinct_destination(tmp_path):
+    ex = FileExecutor()
+    src = tmp_path / "source.txt"
+    src.write_text("source contents")
+    dst = tmp_path / "destination.txt"
+    dst.write_text("old destination")
+    res = await ex.execute(
+        _action("file.move", src, {"destination": dst, "overwrite": True})
+    )
+    assert res.success is True
+    assert not src.exists()
+    assert dst.read_text() == "source contents"
 
 
 async def test_mkdir_and_exist_ok(tmp_path):
@@ -176,6 +216,18 @@ async def test_copy_verifier_fails_on_mismatch(tmp_path):
         _action("file.copy", src, {"destination": dst}), ExecutorResult(success=True)
     )
     assert vr.status == VerificationStatus.FAILED
+
+
+async def test_copy_verifier_fails_when_source_missing_despite_matching_evidence(tmp_path):
+    src = tmp_path / "missing.txt"
+    dst = tmp_path / "d.txt"
+    dst.write_text("payload")
+    vr = await FileCopyVerifier().verify(
+        _action("file.copy", src, {"destination": dst}),
+        ExecutorResult(success=True, evidence={"sha256": sha256_file(dst)}),
+    )
+    assert vr.status == VerificationStatus.FAILED
+    assert "Source missing" in vr.message
 
 
 async def test_move_verifier_detects_lingering_source(tmp_path):

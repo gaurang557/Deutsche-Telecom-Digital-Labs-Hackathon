@@ -25,7 +25,7 @@ def _dispatcher(**handlers) -> Dispatcher:
     # original M0 behavioural assertions intact.
     reg = ActionRegistry()
     for type_, handler in handlers.items():
-        reg.register(type_, handler)
+        reg.register(type_, handler, requires_verification=False)
     return Dispatcher(reg, AllowAllPolicy())
 
 
@@ -66,12 +66,17 @@ async def test_executor_exception_is_contained():
 
 def test_registry_rejects_duplicate_and_empty():
     reg = ActionRegistry()
-    reg.register("mock.echo", EchoExecutor())
+    reg.register("mock.echo", EchoExecutor(), requires_verification=False)
     with pytest.raises(ValueError):
-        reg.register("mock.echo", EchoExecutor())
-    reg.register("mock.echo", EchoExecutor(), override=True)  # allowed
+        reg.register("mock.echo", EchoExecutor(), requires_verification=False)
+    reg.register(
+        "mock.echo",
+        EchoExecutor(),
+        requires_verification=False,
+        override=True,
+    )  # allowed
     with pytest.raises(ValueError):
-        reg.register("", EchoExecutor())
+        reg.register("", EchoExecutor(), requires_verification=False)
     assert "mock.echo" in reg
     assert reg.types() == ["mock.echo"]
 

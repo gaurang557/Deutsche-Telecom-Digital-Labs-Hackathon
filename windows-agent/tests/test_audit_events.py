@@ -33,7 +33,11 @@ class FailVerifier(Verifier):
 def _dispatcher(policy, *, handler=None, verification=None):
     sink = InMemoryAuditSink()
     reg = ActionRegistry()
-    reg.register_action("mock.echo", handler or EchoExecutor())
+    reg.register_action(
+        "mock.echo",
+        handler or EchoExecutor(),
+        requires_verification=False,
+    )
     return Dispatcher(reg, policy, verification=verification, audit=sink), sink
 
 
