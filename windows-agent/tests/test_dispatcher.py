@@ -9,6 +9,7 @@ from windows_agent.executors.common.mock import (
     FailingExecutor,
     RaisingExecutor,
 )
+from windows_agent.policy import AllowAllPolicy
 
 
 def _action(type_: str) -> Action:
@@ -19,10 +20,13 @@ def _action(type_: str) -> Action:
 
 
 def _dispatcher(**handlers) -> Dispatcher:
+    # Milestone 1 changed the Dispatcher constructor to require an explicit
+    # policy (the dispatcher must never self-authorize). AllowAllPolicy keeps the
+    # original M0 behavioural assertions intact.
     reg = ActionRegistry()
     for type_, handler in handlers.items():
         reg.register(type_, handler)
-    return Dispatcher(reg)
+    return Dispatcher(reg, AllowAllPolicy())
 
 
 async def test_known_action_succeeds_and_echoes():

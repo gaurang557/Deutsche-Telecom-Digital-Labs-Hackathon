@@ -14,6 +14,11 @@ audit, or action contracts.
 > deterministic code may *authorize* them. This is enforced structurally, not
 > by convention.
 
+> **This is a self-contained module.** Everything for it lives under the
+> `windows-agent/` folder inside the shared source tree; it has its own
+> dependencies, tests, docs, and `.gitignore`, and does not depend on anything
+> outside this folder. Run all commands below from inside `windows-agent/`.
+
 ---
 
 ## Project status (milestone-by-milestone)
@@ -45,7 +50,8 @@ early setup stays fast and portable.
 ## Setup
 
 ```powershell
-# from the repository root
+# from inside the windows-agent/ module folder
+cd windows-agent
 python -m venv .venv
 .venv\Scripts\activate          # PowerShell on Windows
 pip install -r requirements.txt
@@ -54,6 +60,7 @@ pip install -r requirements.txt
 ## Run the tests
 
 ```powershell
+# from inside windows-agent/
 pytest -q
 ```
 
@@ -64,6 +71,8 @@ repo root).
 ---
 
 ## Repository structure
+
+Everything below is rooted at the `windows-agent/` module folder:
 
 ```
 windows_agent/
@@ -85,7 +94,9 @@ tests/
   test_dispatcher.py    # dispatch success/failure + unknown-action safety + evidence bounding
 docs/
   ARCHITECTURE.md       # the architecture description deliverable
+  WALKTHROUGH.md        # guided tour: how the files fit together + reading order
   QUIZ_NOTES.md         # study notes / anticipated Q&A
+CHANGES.md              # per-milestone / per-commit changelog
 requirements.txt
 pytest.ini
 ```
