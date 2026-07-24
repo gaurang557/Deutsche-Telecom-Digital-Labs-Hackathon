@@ -5,6 +5,13 @@ in-memory sink (for tests) and a null sink (default). Central redaction and
 SQLite persistence are wired in Milestone 11 — behind this same interface.
 """
 
+from .query import AuditLogReader, redact
 from .sink import AuditSink, InMemoryAuditSink, NullAuditSink
 
-__all__ = ["AuditSink", "InMemoryAuditSink", "NullAuditSink"]
+__all__ = [
+    "AuditSink",
+    "InMemoryAuditSink",
+    "NullAuditSink",
+    "AuditLogReader",
+    "redact",
+]
