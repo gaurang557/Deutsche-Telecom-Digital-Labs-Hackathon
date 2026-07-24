@@ -5,7 +5,7 @@ each decision. It addresses every topic required by the deliverable. Where a
 capability is not yet implemented, it is marked **[Planned]** and the design is
 described so the intent is clear and reviewable.
 
-Legend: **[Implemented]** = code exists today (through Milestone 2). **[Planned]** =
+Legend: **[Implemented]** = code exists today (through Milestone 3). **[Planned]** =
 designed, lands in a later milestone.
 
 ---
@@ -100,9 +100,13 @@ backbone everything else plugs into:
 ## 3. Screen and application understanding  **[Planned — M4]**
 
 Executor preference order (most reliable first):
-1. **Structured file/application APIs** — PyMuPDF (PDF), openpyxl (XLSX),
-   python-docx (DOCX), python-pptx (PPTX). Reading a cell via a library is far
-   more reliable than scraping a GUI.
+1. **Structured file/application APIs** — PyMuPDF (PDF) **[Implemented — M3, read
+   only]**, openpyxl (XLSX) [Planned], python-docx (DOCX) [Planned], python-pptx
+   (PPTX) [Planned]. Reading a cell (or a PDF page) via a library is far more
+   reliable than scraping a GUI. The read-only `pdf.*` actions
+   (`pdf.page_count`, `pdf.get_metadata`, `pdf.read_text`, `pdf.search`) live in
+   `executors/pdf_ops.py`; extracted text/matches are bounded and treated as
+   untrusted data.
 2. **Accessibility / semantic UI automation** — Windows UI Automation via
    `pywinauto` (roles, names, control patterns).
 3. **Keyboard shortcuts**.
@@ -137,6 +141,10 @@ text are always **untrusted data**.
   - `file.delete` → the path is gone. [Implemented]
   - `spreadsheet.write_cell` → reload and re-read the cell; expected == observed. [Planned — M4]
   - `document.replace_text` → reopen; the replacement is present. [Planned — M6]
+- **Read-only actions need no verifier.** The `pdf.*` actions added in M3
+  (`executors/pdf_ops.py`) are `RiskLevel.NONE` (no side effects), so no verifier
+  is registered and the VerificationRegistry correctly returns `SKIPPED` — the
+  same treatment as `file.exists`/`file.list`/`file.read_text`.
 - `expected_result` on the `Action` feeds the verification assertion.
 - **Consequential actions are never auto-retried.** Retries are limited and
   logged with evidence.

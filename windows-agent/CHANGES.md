@@ -5,6 +5,56 @@ single milestone commit contains, so it can double as the commit body.
 
 ---
 
+## Milestone 3 — PDF Executor (read-only)
+
+**Summary:** Added the first document-reading capability: four read-only `pdf.*`
+actions backed by PyMuPDF (a structured PDF API, chosen over GUI scraping for
+reliability — see ARCHITECTURE §3/§9). Blocking PyMuPDF parsing runs off the
+event loop via `asyncio.to_thread`, mirroring `file_ops`. Every action is
+`RiskLevel.NONE` (no side effects), so **no verifier is registered and
+verification is SKIPPED** — verification exists only for modifying actions.
+Extracted text and search matches are bounded so a large PDF can never bloat
+evidence.
+
+**Added**
+- `executors/pdf_ops.py` — `PdfExecutor` handling `pdf.page_count`,
+  `pdf.get_metadata`, `pdf.read_text` (single page or inclusive 0-based range),
+  and `pdf.search` (per-page hit counts via `page.search_for`); structured
+  `_err` returns; module-level bounding caps (`_DEFAULT_TEXT_CHAR_CAP`,
+  `_DEFAULT_SEARCH_RESULTS`); `PDF_ACTION_TYPES`; `register_pdf_executor`. Fails
+  closed on missing file, non-PDF/unparseable input, password-protected PDFs
+  (never prompts), out-of-range page indices, and empty search queries; the
+  `fitz` document is always closed via try/finally.
+- `tests/test_pdf_ops.py` — 19 tests (executor units for the four actions,
+  bounding/cap enforcement, error paths, plus end-to-end via the Dispatcher
+  asserting SUCCESS with bounded evidence and verification SKIPPED). Test PDFs
+  are built on the fly with PyMuPDF (no committed binary fixtures).
+
+**Changed**
+- `executors/__init__.py` — export `PdfExecutor`, `PDF_ACTION_TYPES`,
+  `register_pdf_executor`; docstring mentions `pdf_ops.py`.
+- `requirements.txt` — add `PyMuPDF` (imported as `fitz`).
+- `docs/ACTION_REFERENCE.md` — new `pdf.*` section (params/evidence/error codes,
+  risk `NONE`); removed `pdf.*` from the roadmap.
+- `docs/ARCHITECTURE.md` — §3 marks PDF reading Implemented (M3) via PyMuPDF; §5
+  notes read-only actions need no verifier.
+- `docs/WALKTHROUGH.md` — M3 row ✅; `test_pdf_ops.py` added to the test list.
+
+**Tests:** `pytest -q` → **104 passed** (85 baseline + 19 new).
+
+---
+
+## Docs — move shared deliverables to repo-root docs/
+
+**Summary:** Moved `ARCHITECTURE.md` and `ACTION_REFERENCE.md` out of the module
+into the team-shared repo-root `docs/` (via `git mv`, history preserved), so the
+architecture deliverable and the LLM-facing action reference sit alongside the
+other shared team docs. `WALKTHROUGH.md` and `QUIZ_NOTES.md` stay module-local.
+Updated cross-references in `README.md`, `docs/WALKTHROUGH.md`, and
+`docs/QUIZ_NOTES.md`.
+
+---
+
 ## Contract reconciliation + native audit-log reader
 
 **Summary:** Aligned our contracts with the shared team `agent/models.py` where

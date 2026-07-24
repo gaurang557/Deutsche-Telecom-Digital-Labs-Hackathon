@@ -99,5 +99,5 @@ because "no exception" is not proof of success.
 
 Only **Milestone 0** (the execution contract) is implemented today. Speech,
 planning-LLM, desktop understanding, state, verification, policy, and audit are
-**designed** (see `ARCHITECTURE.md`) but not yet coded. This is deliberate
+**designed** (see `../docs/ARCHITECTURE.md`) but not yet coded. This is deliberate
 milestone ordering: prove the safe execution core first.
