@@ -11,8 +11,3 @@ artifacts/
 
 # Manual-testing scratch area (tools/manual_file_test.py) — never tracked.
 sandbox/
-
-# Kept local only (not tracked in git) — maintained on-disk, shared out-of-band.
-CHANGES.md
-docs/WALKTHROUGH.md
-docs/ARCHITECTURE.md

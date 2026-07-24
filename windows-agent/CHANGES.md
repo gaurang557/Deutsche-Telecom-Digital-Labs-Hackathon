@@ -5,6 +5,61 @@ single milestone commit contains, so it can double as the commit body.
 
 ---
 
+## Contract reconciliation + native audit-log reader
+
+**Summary:** Aligned our contracts with the shared team `agent/models.py` where
+it was safe to, and gave the LLM a native, read-only view of our audit events.
+
+**Changed**
+- `contracts/enums.py` — `RiskLevel` now `NONE, LOW, MEDIUM, HIGH, CONSEQUENTIAL, FORBIDDEN`
+  (shared vocabulary + our `FORBIDDEN`). Risk is set by our deterministic policy and
+  surfaced on `PolicyDecision.risk_level`; the LLM only ingests it (still off the
+  `Action`; `extra="forbid"` retained).
+- `policy/mock.py` — default `RiskLevel.READ` → `RiskLevel.NONE`.
+- `docs/ACTION_REFERENCE.md` — risk groupings + enum list updated to the new vocabulary.
+
+**Added**
+- `audit/query.py` — `AuditLogReader` (fetch native `AuditEvent`s as JSON-serialisable
+  dicts, filterable by task/action/event-type/time range/limit) + `redact()` seam
+  (no-op until M11). We emit action-level events; the LLM queries/translates them.
+- `tests/test_audit_query.py` — reader tests.
+
+**Deliberately unchanged** (handled by the translation layer / LLM, per team call):
+field-name renames, timestamp formats, `AuditEvent.request_id` vs `task_id`,
+coarse event vocabulary, structured `ActionError` vs string, `VerificationResult`
+mapping, `ActionStatus` values, and our executor names.
+
+**Tests:** `pytest -q` → **85 passed.**
+
+---
+
+## Milestone 2 — File Operations Executor + Verifiers
+
+**Summary:** First real capability on the pipeline: eight `file.*` actions with
+independent re-observation verifiers. Blocking filesystem I/O runs off the event
+loop via `asyncio.to_thread`; reads/listings are capped; SHA256 hashes are
+recorded as evidence for verification.
+
+**Added**
+- `executors/file_ops.py` — `FileExecutor` handling `file.exists`, `file.list`,
+  `file.read_text`, `file.copy`, `file.move`, `file.write_text`, `file.mkdir`,
+  `file.delete`; `sha256_file` helper; structured `_err` returns; `register_file_executor`.
+- `verification/file_verifiers.py` — `FileCopyVerifier` (source/dest hash match),
+  `FileMoveVerifier` (source absent + dest present + hash matches pre-move evidence),
+  `FileWriteVerifier`, `FileMkdirVerifier`, `FileDeleteVerifier`; `register_file_verifiers`.
+- `tests/test_file_ops.py` — 21 tests (executor units, verifier units, end-to-end via dispatcher).
+- `tools/manual_file_test.py` — interactive CLI that exercises `file.*` through the
+  full pipeline against a `sandbox/` dir (sandbox is gitignored).
+- `docs/ACTION_REFERENCE.md` — LLM-facing reference for the `file.*` actions.
+
+**Changed**
+- `executors/__init__.py`, `verification/__init__.py` — export the new
+  executor/verifiers + register helpers.
+
+**Tests:** `file.*` unit + end-to-end all green.
+
+---
+
 ## Housekeeping — self-contained module layout
 
 **Summary:** Moved the entire project into a single self-contained folder,

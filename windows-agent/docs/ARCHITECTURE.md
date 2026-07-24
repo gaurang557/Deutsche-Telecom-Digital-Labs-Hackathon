@@ -5,7 +5,7 @@ each decision. It addresses every topic required by the deliverable. Where a
 capability is not yet implemented, it is marked **[Planned]** and the design is
 described so the intent is clear and reviewable.
 
-Legend: **[Implemented]** = code exists today (Milestone 0). **[Planned]** =
+Legend: **[Implemented]** = code exists today (through Milestone 2). **[Planned]** =
 designed, lands in a later milestone.
 
 ---
@@ -125,14 +125,18 @@ text are always **untrusted data**.
   is **revalidated against the real environment before important actions** — a
   window may have closed or focus changed.
 
-## 5. Action verification  **[Planned — M2]**
+## 5. Action verification  **[Implemented — M2 for file.*; more executors later]**
 
 - **A function returning without an exception is NOT proof of success.** Every
-  modifying action must independently **re-observe state**:
-  - `file.copy` → destination exists and matches source.
-  - `file.move` → destination exists, source absent, contents match.
-  - `spreadsheet.write_cell` → reload and re-read the cell; expected == observed.
-  - `document.replace_text` → reopen; the replacement is present.
+  modifying action must independently **re-observe state**. Implemented today
+  (M2, `verification/file_verifiers.py`):
+  - `file.copy` → destination exists and its SHA256 matches the source. [Implemented]
+  - `file.move` → destination present, source absent, hash matches pre-move evidence. [Implemented]
+  - `file.write_text` → re-read; content/length matches what was written. [Implemented]
+  - `file.mkdir` → the directory now exists. [Implemented]
+  - `file.delete` → the path is gone. [Implemented]
+  - `spreadsheet.write_cell` → reload and re-read the cell; expected == observed. [Planned — M4]
+  - `document.replace_text` → reopen; the replacement is present. [Planned — M6]
 - `expected_result` on the `Action` feeds the verification assertion.
 - **Consequential actions are never auto-retried.** Retries are limited and
   logged with evidence.
@@ -150,14 +154,19 @@ text are always **untrusted data**.
 
 ## 7. Permission and safety model (the core)  **[Planned — M1; enforced structurally in M0]**
 
-- **Deterministic risk classification** into fixed classes:
-  `READ`, `NAVIGATE`, `MODIFY`, `CONSEQUENTIAL`, `FORBIDDEN`. Computed by pure
-  code from the action type/target/parameters — never by the LLM.
-  - READ: pdf/spreadsheet read, list files, inspect controls.
-  - NAVIGATE: open/focus app, browser navigation.
-  - MODIFY: create/edit a local working file, rename/move within the workspace.
-  - CONSEQUENTIAL: delete, overwrite original, submit form, send/publish,
-    upload sensitive info → **requires confirmation immediately before execution**.
+- **Deterministic risk classification** into fixed classes (aligned with the
+  shared team `RiskLevel` vocabulary, plus our `FORBIDDEN`):
+  `NONE`, `LOW`, `MEDIUM`, `HIGH`, `CONSEQUENTIAL`, `FORBIDDEN`. Computed by pure
+  code from the action type/target/parameters — **the LLM never sets risk; it
+  only ingests the value our policy assigns** (surfaced on `PolicyDecision.risk_level`).
+  - NONE: read-only, no side effects (pdf/spreadsheet read, list files,
+    `file.exists`/`file.list`/`file.read_text`, inspect controls).
+  - LOW: local and reversible (type into an unsaved draft).
+  - MEDIUM: creates local state (`file.copy`, `file.write_text`, `file.mkdir`, save new file).
+  - HIGH: destructive but local (`file.move`, `file.delete`, overwrite original,
+    bulk rename) → **requires confirmation**.
+  - CONSEQUENTIAL: leaves the machine (send, submit, publish, purchase) →
+    **requires confirmation immediately before execution**.
   - FORBIDDEN: arbitrary shell / PowerShell / CMD / registry / software install /
     any command sourced from a webpage/document/PDF → **always denied**.
 - **`PolicyDecision`** carries `outcome` (allow/deny/confirm/clarify),
@@ -185,6 +194,11 @@ text are always **untrusted data**.
   `ACTION_STARTED/COMPLETED/FAILED/CANCELLED`, `VERIFICATION_STARTED/PASSED/
   FAILED`, `TASK_PAUSED/RESUMED/CORRECTED/CANCELLED`, `TASK_COMPLETED/FAILED`,
   `UNTRUSTED_CONTENT_DETECTED`.
+- **Native audit-log reader** (`audit/query.py`, `AuditLogReader`) **[Implemented]**:
+  exposes our native `AuditEvent`s to the LLM as JSON-serialisable dicts,
+  filterable by task/action/event-type/time range/limit. A `redact()` seam is
+  applied on read (no-op until M11). We own and emit action-level events; the LLM
+  queries and translates them rather than us mapping to a shared schema.
 - **Redaction** is central: all audit data passes through one redaction layer
   before persistence. Secrets, passwords, tokens, cookies, and complete
   document contents are never stored.
