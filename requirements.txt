@@ -1,0 +1,6 @@
+# Milestone 0 — execution contract only. Kept intentionally minimal;
+# heavier dependencies (PDF/spreadsheet/desktop/LLM/voice) arrive with the
+# milestones that need them.
+pydantic>=2.6
+pytest>=8.0
+pytest-asyncio>=0.23
