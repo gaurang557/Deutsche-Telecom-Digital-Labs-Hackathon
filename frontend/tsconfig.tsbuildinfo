@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/usevoicecapture.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/speech-recognition.d.ts","./src/usevoicecapture.ts"],"version":"5.9.3"}

@@ -7,6 +7,7 @@ decoded by faster-whisper via PyAV, so no separate ffmpeg binary is required.
 
 import io
 import math
+import re
 
 from faster_whisper import WhisperModel
 
@@ -14,6 +15,22 @@ from app.config import get_settings
 from app.voice.schemas import Transcript
 
 _model: WhisperModel | None = None
+
+
+def collapse_repeated_sentences(text: str) -> str:
+    """Remove consecutive duplicate sentences produced at audio boundaries."""
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
+    collapsed: list[str] = []
+    previous = ""
+    for sentence in sentences:
+        cleaned = sentence.strip()
+        normalized = re.sub(r"\W+", " ", cleaned).strip().casefold()
+        if normalized and normalized == previous and len(normalized) >= 10:
+            continue
+        if cleaned:
+            collapsed.append(cleaned)
+        previous = normalized
+    return " ".join(collapsed)
 
 
 def is_model_loaded() -> bool:
@@ -50,7 +67,9 @@ def transcribe_audio(audio: bytes) -> Transcript:
     segments, info = model.transcribe(io.BytesIO(audio))
     segments = list(segments)
 
-    text = "".join(segment.text for segment in segments).strip()
+    text = collapse_repeated_sentences(
+        "".join(segment.text for segment in segments).strip()
+    )
 
     confidence: float | None = None
     total_duration = sum(segment.end - segment.start for segment in segments)

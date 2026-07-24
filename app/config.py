@@ -1,14 +1,19 @@
+import os
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-# agent/config.py
-from pathlib import Path
-import os
 
-DB_PATH = Path(os.environ.get("AGENT_DB", Path(__file__).parent.parent / "agent_store.db")).resolve()
+DB_PATH = Path(
+    os.environ.get(
+        "AGENT_DB",
+        Path(__file__).parent.parent / "agent_store.db",
+    )
+).resolve()
+
 
 class Settings(BaseSettings):
-    app_name: str = "Voice-Controlled Desktop Agent"
+    app_name: str = "Voice desk"
     app_version: str = "0.1.0"
     debug: bool = False
     ollama_base_url: str = "http://localhost:11434"

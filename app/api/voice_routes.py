@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 from uuid import uuid4
 
+from av.error import FFmpegError
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.config import get_settings
@@ -36,7 +37,21 @@ async def transcribe(file: Annotated[UploadFile, File()]) -> TaskRequest:
     if not audio:
         raise HTTPException(status_code=400, detail="Empty audio upload.")
 
-    transcript = transcribe_audio(audio)
+    try:
+        transcript = transcribe_audio(audio)
+    except FFmpegError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The audio recording was incomplete or unreadable. "
+                "Please hold the microphone button, speak, and release it again."
+            ),
+        ) from exc
+    if not transcript.text:
+        raise HTTPException(
+            status_code=422,
+            detail="No speech was detected. Please record the request again.",
+        )
     return TaskRequest(
         request_id=str(uuid4()),
         text=transcript.text,

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "voice-controlled-desktop-agent"
 version = "0.1.0"
-description = "FastAPI backend for a voice-controlled desktop automation agent."
+description = "FastAPI backend for the Voice desk automation agent."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1.0",

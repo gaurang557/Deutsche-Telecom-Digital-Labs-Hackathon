@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   createPlan,
   executePlan,
   type PlanExecutionResponse,
   type PlanningResponse,
+  type TaskRequest,
 } from "./api";
 import { useVoiceCapture } from "./useVoiceCapture";
 
@@ -15,16 +16,35 @@ interface VoiceHealth {
 
 const LOW_CONFIDENCE = 0.5;
 
-const STATUS_LABEL: Record<string, string> = {
-  idle: "Hold the mic and speak",
-  requesting: "Allow microphone access…",
-  recording: "Listening…",
-  transcribing: "Transcribing…",
-  error: "Something went wrong",
+const CAPTURE_LABEL: Record<string, string> = {
+  idle: "Hold to speak",
+  requesting: "Waiting for microphone access…",
+  recording: "Listening — release when you're done",
+  transcribing: "Turning your voice into text…",
+  error: "I couldn't access the microphone",
 };
+
+function friendlyExecutionMessage(result: PlanExecutionResponse): string {
+  if (result.status === "completed") {
+    return "Done — everything in the plan completed successfully.";
+  }
+  if (result.status === "blocked") {
+    return "I paused because one of the actions needs your attention.";
+  }
+  if (result.status === "cancelled") {
+    return "The task was cancelled. Nothing else will be changed.";
+  }
+  return "I couldn't finish the task. The details below should help us fix it.";
+}
+
+function readableStatus(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
 
 export default function App() {
   const [health, setHealth] = useState<VoiceHealth | null>(null);
+  const [activeRequest, setActiveRequest] = useState<TaskRequest | null>(null);
+  const [draft, setDraft] = useState("");
   const [planning, setPlanning] = useState(false);
   const [planningResult, setPlanningResult] =
     useState<PlanningResponse | null>(null);
@@ -33,209 +53,427 @@ export default function App() {
   const [executionResult, setExecutionResult] =
     useState<PlanExecutionResponse | null>(null);
   const [executionError, setExecutionError] = useState<string | null>(null);
-  const { status, result, error, start, stop } = useVoiceCapture();
+  const {
+    status,
+    result,
+    error,
+    liveTranscript,
+    liveSupported,
+    start,
+    stop,
+  } = useVoiceCapture();
 
   const recording = status === "recording";
-  const busy = status === "requesting" || status === "transcribing";
+  const captureBusy = status === "requesting" || status === "transcribing";
+  const appBusy = captureBusy || planning || executing;
 
   useEffect(() => {
     fetch("/api/v1/voice/health")
-      .then((res) => (res.ok ? res.json() : null))
+      .then((response) => (response.ok ? response.json() : null))
       .then(setHealth)
       .catch(() => setHealth(null));
   }, []);
 
-  useEffect(() => {
-    if (!result?.text) return;
-
-    let active = true;
+  const requestPlan = useCallback(async (request: TaskRequest) => {
+    setActiveRequest(request);
     setPlanning(true);
     setPlanningError(null);
     setPlanningResult(null);
     setExecutionResult(null);
     setExecutionError(null);
 
-    createPlan(result)
-      .then((response) => {
-        if (active) setPlanningResult(response);
-      })
-      .catch((reason: unknown) => {
-        if (active) {
-          setPlanningError(
-            reason instanceof Error ? reason.message : "Planning failed",
-          );
-        }
-      })
-      .finally(() => {
-        if (active) setPlanning(false);
-      });
+    try {
+      setPlanningResult(await createPlan(request));
+    } catch (reason: unknown) {
+      setPlanningError(
+        reason instanceof Error
+          ? reason.message
+          : "I couldn't prepare that plan.",
+      );
+    } finally {
+      setPlanning(false);
+    }
+  }, []);
 
-    return () => {
-      active = false;
-    };
-  }, [result]);
-
-  // Spacebar as an alternative push-to-talk trigger.
   useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !e.repeat) {
-        e.preventDefault();
-        start();
-      }
-    };
-    const up = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
-        e.preventDefault();
-        stop();
-      }
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-    };
-  }, [start, stop]);
+    if (result?.text) void requestPlan(result);
+  }, [requestPlan, result]);
 
-  const lowConfidence =
-    result?.confidence != null && result.confidence < LOW_CONFIDENCE;
+  const submitText = (event: FormEvent) => {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || appBusy) return;
+    setDraft("");
+    void requestPlan({
+      request_id: crypto.randomUUID(),
+      text,
+      source: "text",
+      confidence: null,
+      received_at: new Date().toISOString(),
+    });
+  };
 
   const approveAndExecute = async () => {
     const plan = planningResult?.plan;
-    if (!plan) return;
+    if (!plan || executing) return;
 
-    const riskyActions = plan.actions.filter(
-      (action) => action.requires_confirmation,
-    );
-    const warning =
-      riskyActions.length > 0
-        ? `\n\nThe following actions require explicit confirmation:\n${riskyActions
-            .map((action) => `• ${action.type}: ${action.target}`)
-            .join("\n")}`
-        : "";
-    if (!window.confirm(`Execute this plan?\n\n${plan.summary}${warning}`)) {
-      return;
-    }
+    const approvedActionIds = plan.actions
+      .filter((action) => action.requires_confirmation)
+      .map((action) => action.action_id);
 
     setExecuting(true);
     setExecutionError(null);
     try {
-      const response = await executePlan(
-        plan.plan_id,
-        riskyActions.map((action) => action.action_id),
-      );
-      setExecutionResult(response);
+      setExecutionResult(await executePlan(plan.plan_id, approvedActionIds));
     } catch (reason: unknown) {
       setExecutionError(
-        reason instanceof Error ? reason.message : "Execution failed",
+        reason instanceof Error
+          ? reason.message
+          : "I couldn't execute that plan.",
       );
     } finally {
       setExecuting(false);
     }
   };
 
+  const resetConversation = () => {
+    setActiveRequest(null);
+    setPlanningResult(null);
+    setPlanningError(null);
+    setExecutionResult(null);
+    setExecutionError(null);
+    setDraft("");
+  };
+
+  const beginVoiceRequest = () => {
+    resetConversation();
+    void start();
+  };
+
+  const lowConfidence =
+    activeRequest?.confidence != null &&
+    activeRequest.confidence < LOW_CONFIDENCE;
+  const hasConversation =
+    activeRequest ||
+    recording ||
+    status === "transcribing" ||
+    planning ||
+    planningResult ||
+    planningError;
+
   return (
-    <main className="app">
-      <h1 className="title">Voice Agent</h1>
-      <p className="subtitle">Local voice-controlled desktop agent</p>
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand__mark">V</span>
+          <span>Voice desk</span>
+        </div>
 
-      <button
-        className={`mic ${recording ? "mic--recording" : ""}`}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          start();
-        }}
-        onPointerUp={stop}
-        onPointerLeave={() => {
-          if (recording) stop();
-        }}
-        disabled={busy}
-        aria-label="Hold to talk"
-      >
-        <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
-          <path
-            fill="currentColor"
-            d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"
-          />
-          <path
-            fill="currentColor"
-            d="M19 12a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 1 0 2 0v-2.08A7 7 0 0 0 19 12Z"
-          />
-        </svg>
-      </button>
+        <button className="new-task" type="button" onClick={resetConversation}>
+          <span aria-hidden="true">＋</span>
+          New task
+        </button>
 
-      <p className={`status status--${status}`}>{STATUS_LABEL[status]}</p>
+        <div className="sidebar__section">
+          <p className="sidebar__label">Workspace</p>
+          <div className="sidebar__item sidebar__item--active">
+            <span className="sidebar__glyph" aria-hidden="true">⌁</span>
+            Voice desk
+          </div>
+        </div>
 
-      {error && <p className="error">{error}</p>}
-
-      {result && (
-        <div className="transcript">
-          <p className="transcript__text">
-            {result.text ? `“${result.text}”` : "(no speech detected)"}
-          </p>
-          <p className="transcript__meta">
-            {result.confidence != null
-              ? `confidence ${(result.confidence * 100).toFixed(0)}%`
-              : "confidence —"}
-            {lowConfidence && " · low confidence, please repeat"}
+        <div className="system-card">
+          <div className="system-card__row">
+            <span
+              className={`status-dot ${health ? "status-dot--online" : ""}`}
+              aria-hidden="true"
+            />
+            <span>{health ? "Systems ready" : "Connecting…"}</span>
+          </div>
+          <p>
+            {health
+              ? `${health.model} · ${health.model_loaded ? "Voice ready" : "Voice loads on first use"}`
+              : "Checking local services"}
           </p>
         </div>
-      )}
+      </aside>
 
-      {planning && <p className="status">Planning actions…</p>}
-      {planningError && <p className="error">{planningError}</p>}
-      {planningResult?.control_intent && (
-        <div className="transcript">
-          <p className="transcript__text">
-            Control command: {planningResult.control_intent}
-          </p>
-        </div>
-      )}
-      {planningResult?.plan && (
-        <div className="transcript">
-          <p className="transcript__text">{planningResult.plan.summary}</p>
-          <ol>
-            {planningResult.plan.actions.map((action) => (
-              <li key={action.action_id}>
-                {action.type}: {action.target}
-                {action.requires_confirmation && " · confirmation required"}
-              </li>
-            ))}
-          </ol>
-          {!executionResult && (
-            <button
-              type="button"
-              onClick={approveAndExecute}
-              disabled={executing}
-            >
-              {executing ? "Executing…" : "Approve and execute"}
-            </button>
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">VOICE-CONTROLLED AGENT</p>
+            <h1>Voice desk</h1>
+          </div>
+          <div className="privacy-pill">
+            <span aria-hidden="true">◆</span>
+            Local-first workspace
+          </div>
+        </header>
+
+        <section
+          className={`conversation ${hasConversation ? "" : "conversation--empty"}`}
+          aria-live="polite"
+        >
+          {!hasConversation && (
+            <div className="welcome">
+              <div className="welcome__orb" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <p className="eyebrow">READY WHEN YOU ARE</p>
+              <h2>What can I take care of?</h2>
+              <p>
+                Ask me to open apps, work with files, or handle a desktop task.
+                You’ll always review the plan before anything happens.
+              </p>
+              <div className="suggestions">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDraft("Open the latest PDF in my Downloads folder")
+                  }
+                >
+                  Open my latest PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDraft("Open Calculator")}
+                >
+                  Launch an application
+                </button>
+              </div>
+            </div>
           )}
-        </div>
-      )}
-      {executionError && <p className="error">{executionError}</p>}
-      {executionResult && (
-        <div className="transcript">
-          <p className="transcript__text">
-            Execution {executionResult.status}
-          </p>
-          <ol>
-            {executionResult.results.map((action) => (
-              <li key={action.action_id}>
-                {action.status}
-                {action.error ? ` · ${action.error}` : ""}
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
 
-      {health && (
-        <footer className="health">
-          backend {health.status} · model {health.model} ·{" "}
-          {health.model_loaded ? "loaded" : "not loaded"}
-        </footer>
-      )}
-    </main>
+          {activeRequest && (
+            <article className="message message--user">
+              <div className="message__avatar">You</div>
+              <div className="message__content">
+                <p>{activeRequest.text}</p>
+                {activeRequest.source === "speech" && (
+                  <span className={lowConfidence ? "confidence--low" : ""}>
+                    Voice transcript
+                    {activeRequest.confidence != null &&
+                      ` · ${Math.round(activeRequest.confidence * 100)}% confidence`}
+                  </span>
+                )}
+              </div>
+            </article>
+          )}
+
+          {(recording || status === "transcribing") && (
+            <article className="message message--user message--live">
+              <div className="message__avatar">You</div>
+              <div className="message__content">
+                <p>
+                  {liveTranscript ||
+                    (liveSupported
+                      ? "Listening…"
+                      : "Listening — your words will appear when you release.")}
+                  {recording && <span className="live-caret" aria-hidden="true" />}
+                </p>
+                <span>
+                  {recording ? "Live voice transcript" : "Finishing transcript…"}
+                </span>
+              </div>
+            </article>
+          )}
+
+          {planning && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <div className="thinking">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <small>Thinking through the safest way to do that…</small>
+              </div>
+            </article>
+          )}
+
+          {planningError && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <p>I ran into a problem while preparing your plan.</p>
+                <div className="notice notice--error">{planningError}</div>
+              </div>
+            </article>
+          )}
+
+          {planningResult?.control_intent && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <p>
+                  Understood — I’ll {planningResult.control_intent} the current
+                  task.
+                </p>
+              </div>
+            </article>
+          )}
+
+          {planningResult?.plan && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <p>{planningResult.plan.summary}</p>
+
+                <div className="plan-card">
+                  <div className="plan-card__header">
+                    <div>
+                      <span className="plan-card__kicker">PROPOSED PLAN</span>
+                      <strong>
+                        {planningResult.plan.actions.length}{" "}
+                        {planningResult.plan.actions.length === 1
+                          ? "step"
+                          : "steps"}
+                      </strong>
+                    </div>
+                    <span className="review-badge">Ready to review</span>
+                  </div>
+
+                  <ol className="plan-steps">
+                    {planningResult.plan.actions.map((action, index) => (
+                      <li key={action.action_id}>
+                        <span className="step-number">{index + 1}</span>
+                        <div>
+                          <p>{action.description}</p>
+                          {action.requires_confirmation && (
+                            <span className="risk-note">
+                              This step changes something outside the app
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+
+                  {!executionResult && (
+                    <div className="plan-card__footer">
+                      <p>
+                        Nothing runs until you approve this plan.
+                      </p>
+                      <button
+                        className="primary-action"
+                        type="button"
+                        onClick={approveAndExecute}
+                        disabled={executing}
+                      >
+                        {executing ? (
+                          <>
+                            <span className="button-spinner" />
+                            Working on it…
+                          </>
+                        ) : (
+                          <>
+                            Approve &amp; execute
+                            <span aria-hidden="true">→</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </article>
+          )}
+
+          {executionError && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <p>I couldn’t start the task.</p>
+                <div className="notice notice--error">{executionError}</div>
+              </div>
+            </article>
+          )}
+
+          {executionResult && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <p>{friendlyExecutionMessage(executionResult)}</p>
+                <div
+                  className={`result-card result-card--${executionResult.status}`}
+                >
+                  <div className="result-card__title">
+                    <span aria-hidden="true">
+                      {executionResult.status === "completed" ? "✓" : "!"}
+                    </span>
+                    {readableStatus(executionResult.status)}
+                  </div>
+                  <ul>
+                    {executionResult.results.map((action, index) => (
+                      <li key={action.action_id}>
+                        <span>Step {index + 1}</span>
+                        <strong>{readableStatus(action.status)}</strong>
+                        {action.error && <p>{action.error}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </article>
+          )}
+        </section>
+
+        <div className="composer-wrap">
+          <form className="composer" onSubmit={submitText}>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              placeholder="Ask Voice desk to do something on your desktop…"
+              rows={1}
+              disabled={appBusy}
+              aria-label="Task request"
+            />
+            <div className="composer__actions">
+              <span className={`capture-status capture-status--${status}`}>
+                {CAPTURE_LABEL[status]}
+              </span>
+              <button
+                className={`voice-button ${recording ? "voice-button--recording" : ""}`}
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  beginVoiceRequest();
+                }}
+                onPointerUp={stop}
+                onPointerLeave={() => {
+                  if (recording) stop();
+                }}
+                disabled={appBusy && !recording}
+                aria-label="Hold to speak"
+                title="Hold to speak"
+              >
+                <span className="mic-glyph" aria-hidden="true" />
+              </button>
+              <button
+                className="send-button"
+                type="submit"
+                disabled={!draft.trim() || appBusy}
+                aria-label="Send request"
+              >
+                ↑
+              </button>
+            </div>
+          </form>
+          {error && <p className="composer-error">{error}</p>}
+          <p className="composer-note">
+            Voice desk can make mistakes. Review plans before execution.
+          </p>
+        </div>
+      </main>
+    </div>
   );
 }

@@ -1,2 +1,1 @@
-"""Voice-controlled desktop agent API."""
-
+"""Voice desk API."""

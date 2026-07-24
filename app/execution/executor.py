@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from app.schemas import (
@@ -25,6 +26,8 @@ _UNSUPPORTED_EXTERNAL_ACTIONS = {
 _WINDOWS_APPLICATIONS = {
     "calculator": "calc.exe",
     "file explorer": "explorer.exe",
+    "google chrome": "chrome.exe",
+    "microsoft edge": "msedge.exe",
     "notepad": "notepad.exe",
     "paint": "mspaint.exe",
     "text editor": "notepad.exe",
@@ -112,6 +115,7 @@ class DesktopExecutor:
         handlers = {
             ActionType.OPEN_APPLICATION: self._open_application,
             ActionType.OPEN_FILE: self._open_file,
+            ActionType.OPEN_URL: self._open_url,
             ActionType.FOCUS_APPLICATION: self._focus_application,
             ActionType.CLICK_ELEMENT: self._click_element,
             ActionType.TYPE_TEXT: self._type_text,
@@ -171,6 +175,45 @@ class DesktopExecutor:
         else:
             raise RuntimeError(f"Desktop execution is unsupported on {system}")
         return {"path": str(path), "opened": True}
+
+    @staticmethod
+    def _open_url(action: Action) -> dict[str, Any]:
+        target = action.target.strip()
+        if "://" not in target:
+            target = f"https://{target}"
+        parsed = urlparse(target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("open_url requires a valid HTTP or HTTPS URL")
+
+        browser = action.parameters.get("browser")
+        if browser is not None and not isinstance(browser, str):
+            raise ValueError("open_url browser must be text")
+
+        system = platform.system()
+        if system == "Darwin":
+            command = ["open", target]
+            if browser:
+                command = ["open", "-a", browser, target]
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        elif system == "Windows":
+            if browser:
+                executable = _WINDOWS_APPLICATIONS.get(
+                    browser.casefold(),
+                    browser,
+                )
+                subprocess.Popen([executable, target])
+            elif hasattr(os, "startfile"):
+                os.startfile(target)  # type: ignore[attr-defined]
+            else:
+                raise RuntimeError("Windows URL launcher is unavailable")
+        else:
+            raise RuntimeError(f"Desktop execution is unsupported on {system}")
+        return {"url": target, "browser": browser or "system default", "opened": True}
 
     @staticmethod
     def _resolve_file(action: Action) -> Path:

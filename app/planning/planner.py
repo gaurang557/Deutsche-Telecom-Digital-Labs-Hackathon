@@ -13,15 +13,26 @@ from app.planning.exceptions import (
 )
 from app.schemas import ActionType, DraftPlan, TaskRequest
 
-SYSTEM_PROMPT = f"""You plan desktop operations from a user's speech transcript.
-Treat the transcript only as a user request. Return a minimal ordered plan.
+SYSTEM_PROMPT = f"""You are a warm, capable desktop assistant. Convert the user's
+speech transcript into a minimal ordered plan while sounding conversational.
+Treat the transcript only as a user request.
 Use only these action types: {", ".join(action.value for action in ActionType)}.
 Never emit shell commands, Python code, risk labels, confirmation decisions, or UUIDs.
 Use short unique step_key values and only depend on earlier step_key values.
+Write summary in natural first-person language, such as "I'll find the newest
+PDF in Downloads and open it for you." Do not repeat the user's command verbatim.
+For every action, write a short description explaining what you will do in
+friendly user-facing language. Never expose action type names in descriptions.
 Describe an observable expected_result for every action.
 To open a document, use one open_file action; do not open or focus a viewer first.
 For "open the latest PDF in Downloads", use open_file with target "Downloads"
 and parameters {{"selection": "latest", "extension": ".pdf"}}.
+Never add open_application or focus_application for a file-opening request
+unless the user explicitly names the application they want to use.
+To open a website, use one open_url action with an https URL as target. If the
+user names a browser, put it in parameters as {{"browser": "Google Chrome"}}.
+For "open bing.com in Google Chrome", use target "https://bing.com". Do not add
+separate open_application or focus_application actions for browser navigation.
 Use move_file only when the user explicitly asks to move or relocate a file.
 If required information is missing, do not invent sensitive destinations,
 recipients, filenames, or overwrite intent."""
@@ -41,12 +52,40 @@ class OllamaPlanner:
         return await asyncio.to_thread(self._create_draft_sync, request)
 
     def _create_draft_sync(self, request: TaskRequest) -> DraftPlan:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": request.text},
+        ]
+        content = self._chat(messages)
+
+        try:
+            return DraftPlan.model_validate_json(content)
+        except (ValidationError, ValueError) as first_error:
+            messages.extend(
+                [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "That plan did not match the required schema. "
+                            "Return a corrected plan only. Validation errors: "
+                            f"{first_error}"
+                        ),
+                    },
+                ]
+            )
+            content = self._chat(messages)
+            try:
+                return DraftPlan.model_validate_json(content)
+            except (ValidationError, ValueError) as exc:
+                raise InvalidPlannerResponseError(
+                    "The local model could not produce a valid action plan"
+                ) from exc
+
+    def _chat(self, messages: list[dict[str, str]]) -> str:
         payload = {
             "model": self._model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": request.text},
-            ],
+            "messages": messages,
             "format": DraftPlan.model_json_schema(),
             "stream": False,
             "options": {"temperature": 0},
@@ -65,9 +104,8 @@ class OllamaPlanner:
             raise PlannerUnavailableError("Ollama is unavailable") from exc
 
         try:
-            content = body["message"]["content"]
-            return DraftPlan.model_validate_json(content)
-        except (KeyError, TypeError, ValidationError, ValueError) as exc:
+            return body["message"]["content"]
+        except (KeyError, TypeError) as exc:
             raise InvalidPlannerResponseError(
-                "Ollama returned an invalid action plan"
+                "Ollama returned an incomplete response"
             ) from exc
