@@ -120,13 +120,15 @@ _DEFAULT_SEARCH_RESULTS = 100
 #: document will never contain this many occurrences.
 _UNLIMITED = 1_000_000_000
 
-#: Every action type this executor handles. Used by `register_document_executor`.
-DOCUMENT_ACTION_TYPES: tuple[str, ...] = (
-    "document.read_text",
-    "document.get_metadata",
-    "document.find",
-    "document.replace_text",
-)
+#: Every action type this executor handles and its deterministic verification
+#: requirement.
+DOCUMENT_ACTION_REQUIREMENTS: dict[str, bool] = {
+    "document.read_text": False,
+    "document.get_metadata": False,
+    "document.find": False,
+    "document.replace_text": True,
+}
+DOCUMENT_ACTION_TYPES: tuple[str, ...] = tuple(DOCUMENT_ACTION_REQUIREMENTS)
 
 #: core_properties attributes we surface. Datetimes become ISO strings; empty
 #: strings become null; ints (e.g. `revision`) pass through.
@@ -482,6 +484,11 @@ def register_document_executor(
     action types" pattern noted in `executors/base.py`.
     """
     executor = executor or DocumentExecutor()
-    for action_type in DOCUMENT_ACTION_TYPES:
-        registry.register_action(action_type, executor, override=override)
+    for action_type, requires_verification in DOCUMENT_ACTION_REQUIREMENTS.items():
+        registry.register_action(
+            action_type,
+            executor,
+            requires_verification=requires_verification,
+            override=override,
+        )
     return executor

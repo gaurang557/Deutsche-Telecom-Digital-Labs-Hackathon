@@ -98,15 +98,16 @@ ERR_INVALID_PARAMS = "invalid_parameters"
 #: range can never bloat memory/evidence. `truncated=true` marks a clipped read.
 _RANGE_CELL_CAP = 10_000
 
-#: Every action type this executor handles. Used by
-#: `register_spreadsheet_executor`.
-SPREADSHEET_ACTION_TYPES: tuple[str, ...] = (
-    "spreadsheet.list_sheets",
-    "spreadsheet.dimensions",
-    "spreadsheet.read_cell",
-    "spreadsheet.read_range",
-    "spreadsheet.write_cell",
-)
+#: Every action type this executor handles and its deterministic verification
+#: requirement.
+SPREADSHEET_ACTION_REQUIREMENTS: dict[str, bool] = {
+    "spreadsheet.list_sheets": False,
+    "spreadsheet.dimensions": False,
+    "spreadsheet.read_cell": False,
+    "spreadsheet.read_range": False,
+    "spreadsheet.write_cell": True,
+}
+SPREADSHEET_ACTION_TYPES: tuple[str, ...] = tuple(SPREADSHEET_ACTION_REQUIREMENTS)
 
 
 def _err(code: str, message: str, *, retryable: bool = False) -> ExecutorResult:
@@ -403,6 +404,11 @@ def register_spreadsheet_executor(
     many action types" pattern noted in `executors/base.py`.
     """
     executor = executor or SpreadsheetExecutor()
-    for action_type in SPREADSHEET_ACTION_TYPES:
-        registry.register_action(action_type, executor, override=override)
+    for action_type, requires_verification in SPREADSHEET_ACTION_REQUIREMENTS.items():
+        registry.register_action(
+            action_type,
+            executor,
+            requires_verification=requires_verification,
+            override=override,
+        )
     return executor

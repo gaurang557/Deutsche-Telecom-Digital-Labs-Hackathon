@@ -11,6 +11,7 @@ FULL PIPELINE (Milestone 1)
             CONFIRM → NEEDS_CONFIRMATION, executor NOT called
             CLARIFY → CLARIFY,            executor NOT called
             ALLOW   → proceed
+      → required-verifier guard (missing → FAILED, executor NOT called)
       → executor               (execute_authorized_action)
       → verification registry  (independent re-observation; only when execution succeeded)
       → ActionResult           (build_action_result; verification FAILED forces FAILED)
@@ -24,9 +25,10 @@ dispatcher NEVER authorizes on its own — it only consumes a PolicyDecision.
 
 FAIL-CLOSED GUARANTEES
 ----------------------
-Invalid input, unknown action, and executor exceptions all return a structured
-FAILED ActionResult; nothing escapes as an unhandled exception. Consequential
-work never runs without an ALLOW decision.
+Invalid input, unknown action, executor exceptions, and verifier exceptions all
+return a structured FAILED ActionResult. Consequential work never runs without
+an ALLOW decision, and actions marked as requiring verification never start
+without a registered verifier.
 """
 
 from __future__ import annotations
@@ -121,8 +123,8 @@ class Dispatcher:
                                        "Run was cancelled before this action started.")
 
         # 3) Registry lookup — unknown type fails closed.
-        handler = self._registry.get_action_handler(action.type)
-        if handler is None:
+        registration = self._registry.get_action_registration(action.type)
+        if registration is None:
             self._emit(AuditEventType.ACTION_FAILED, action, outcome="failed",
                        summary=f"unknown action {action.type}")
             return self._simple_result(
@@ -130,6 +132,7 @@ class Dispatcher:
                 f"No executor registered for action type {action.type!r}",
                 details={"known_types": self._registry.list_registered_actions()},
             )
+        handler = registration.handler
 
         # 4) Policy gateway — obey the deterministic decision.
         decision: PolicyDecision = self._policy.authorize(action, context)
@@ -137,15 +140,37 @@ class Dispatcher:
         if gated is not None:
             return gated  # DENY / CONFIRM / CLARIFY short-circuit here
 
-        # 5) Execute (only reached on ALLOW).
+        # 5) Required-verifier guard (after policy, before any side effect).
+        if registration.requires_verification and not self._verification.has_verifier(action.type):
+            message = f"Required verifier is not registered for action type {action.type!r}"
+            self._emit(
+                AuditEventType.ACTION_FAILED,
+                action,
+                outcome="failed",
+                summary=message,
+                details={"error_code": ErrorCode.VERIFIER_MISSING.value},
+            )
+            return self._simple_result(
+                action,
+                ActionStatus.FAILED,
+                ErrorCode.VERIFIER_MISSING,
+                message,
+            )
+
+        # 6) Execute (only reached on ALLOW with required verification available).
         exec_result = await self.execute_authorized_action(handler, action, context)
 
-        # 6) Verify — only if execution actually succeeded.
+        # 7) Verify — only if execution actually succeeded.
         verification: VerificationResult | None = None
         if exec_result.success:
-            verification = await self._run_verification(action, exec_result, context)
+            verification = await self._run_verification(
+                action,
+                exec_result,
+                context,
+                required=registration.requires_verification,
+            )
 
-        # 7) Build the planner-facing result.
+        # 8) Build the planner-facing result.
         return self.build_action_result(action, exec_result, verification)
 
     # ── stage helpers ──────────────────────────────────────────────────────
@@ -200,10 +225,39 @@ class Dispatcher:
         return result
 
     async def _run_verification(
-        self, action: Action, exec_result: ExecutorResult, context: ExecutionContext
+        self,
+        action: Action,
+        exec_result: ExecutorResult,
+        context: ExecutionContext,
+        *,
+        required: bool,
     ) -> VerificationResult:
         self._emit(AuditEventType.VERIFICATION_STARTED, action, summary=f"verifying {action.type}")
-        verification = await self._verification.verify_action(action, exec_result, context)
+        try:
+            verification = await self._verification.verify_action(action, exec_result, context)
+        except Exception as exc:
+            exception_name = type(exc).__name__
+            verification = VerificationResult(
+                status=VerificationStatus.FAILED,
+                method=f"verifier exception containment ({exception_name})",
+                expected="verifier completes without raising",
+                observed=exception_name,
+                message=f"Verifier raised {exception_name}: {exc}",
+            )
+
+        if required and verification.status is VerificationStatus.SKIPPED:
+            skipped_message = verification.message
+            verification = VerificationResult(
+                status=VerificationStatus.FAILED,
+                method=verification.method,
+                expected="required verification result",
+                observed=VerificationStatus.SKIPPED.value,
+                message=(
+                    f"Required verifier returned SKIPPED for {action.type!r}"
+                    + (f": {skipped_message}" if skipped_message else "")
+                ),
+            )
+
         if verification.status is VerificationStatus.PASSED:
             self._emit(AuditEventType.VERIFICATION_PASSED, action, outcome="passed", summary=verification.message)
         elif verification.status is VerificationStatus.FAILED:

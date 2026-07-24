@@ -81,13 +81,15 @@ _DEFAULT_TEXT_CHAR_CAP = 20_000
 #: Default/limit on the number of per-page match entries `pdf.search` returns.
 _DEFAULT_SEARCH_RESULTS = 100
 
-#: Every action type this executor handles. Used by `register_pdf_executor`.
-PDF_ACTION_TYPES: tuple[str, ...] = (
-    "pdf.page_count",
-    "pdf.get_metadata",
-    "pdf.read_text",
-    "pdf.search",
-)
+#: Every action type this executor handles and its deterministic verification
+#: requirement. PDF actions are currently read-only.
+PDF_ACTION_REQUIREMENTS: dict[str, bool] = {
+    "pdf.page_count": False,
+    "pdf.get_metadata": False,
+    "pdf.read_text": False,
+    "pdf.search": False,
+}
+PDF_ACTION_TYPES: tuple[str, ...] = tuple(PDF_ACTION_REQUIREMENTS)
 
 #: Metadata keys we surface (PyMuPDF's `doc.metadata` dict keys), plus the
 #: derived `page_count`. Missing/empty values are reported as null.
@@ -327,6 +329,11 @@ def register_pdf_executor(registry, executor: PdfExecutor | None = None, *, over
     action types" pattern noted in `executors/base.py`.
     """
     executor = executor or PdfExecutor()
-    for action_type in PDF_ACTION_TYPES:
-        registry.register_action(action_type, executor, override=override)
+    for action_type, requires_verification in PDF_ACTION_REQUIREMENTS.items():
+        registry.register_action(
+            action_type,
+            executor,
+            requires_verification=requires_verification,
+            override=override,
+        )
     return executor

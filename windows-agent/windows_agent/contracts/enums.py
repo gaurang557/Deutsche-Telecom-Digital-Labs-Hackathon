@@ -66,5 +66,6 @@ class ErrorCode(str, Enum):
     POLICY_DENIED = "policy_denied"            # policy outcome DENY
     CONFIRMATION_REQUIRED = "confirmation_required"  # policy outcome CONFIRM
     CLARIFICATION_REQUIRED = "clarification_required"  # policy outcome CLARIFY
+    VERIFIER_MISSING = "verifier_missing"        # required verifier absent before execution
     VERIFICATION_FAILED = "verification_failed"  # executed but re-observation disagreed
     CANCELLED = "cancelled"                    # cancelled before start

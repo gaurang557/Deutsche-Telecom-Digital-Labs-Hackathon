@@ -82,17 +82,20 @@ _DEFAULT_READ_CAP = 64 * 1024
 #: Hard cap on the number of directory entries returned by `file.list`.
 _LIST_CAP = 1000
 
-#: Every action type this executor handles. Used by `register_file_executor`.
-FILE_ACTION_TYPES: tuple[str, ...] = (
-    "file.exists",
-    "file.list",
-    "file.read_text",
-    "file.copy",
-    "file.move",
-    "file.write_text",
-    "file.mkdir",
-    "file.delete",
-)
+#: Every action type this executor handles and its deterministic verification
+#: requirement. Keeping the bool beside the type makes new registrations
+#: fail-closed: a future action cannot be added without an explicit choice.
+FILE_ACTION_REQUIREMENTS: dict[str, bool] = {
+    "file.exists": False,
+    "file.list": False,
+    "file.read_text": False,
+    "file.copy": True,
+    "file.move": True,
+    "file.write_text": True,
+    "file.mkdir": True,
+    "file.delete": True,
+}
+FILE_ACTION_TYPES: tuple[str, ...] = tuple(FILE_ACTION_REQUIREMENTS)
 
 
 def sha256_file(path: Path) -> str:
@@ -102,6 +105,28 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _paths_identify_same_file(source: Path, destination: Path) -> bool:
+    """Detect lexical/resolved identity and existing filesystem aliases."""
+    try:
+        if source.resolve(strict=False) == destination.resolve(strict=False):
+            return True
+    except (OSError, RuntimeError):
+        # Resolution can fail for malformed paths or filesystem loops. If both
+        # paths exist, samefile below still gives the OS a chance to compare IDs.
+        pass
+
+    try:
+        both_exist = source.exists() and destination.exists()
+    except (OSError, RuntimeError):
+        both_exist = False
+    if both_exist:
+        try:
+            return source.samefile(destination)
+        except (OSError, RuntimeError):
+            pass
+    return False
 
 
 def _err(code: str, message: str, *, retryable: bool = False) -> ExecutorResult:
@@ -263,6 +288,11 @@ class FileExecutor(BaseExecutor):
         dst = Path(dst_param)
         overwrite = bool(self._param(action, "overwrite", False))
 
+        if _paths_identify_same_file(src, dst):
+            return _err(
+                ERR_INVALID_PARAMS,
+                f"Source and destination identify the same file: {src} -> {dst}",
+            )
         if not src.exists():
             return _err(ERR_FILE_NOT_FOUND, f"Source not found: {src}")
         if not src.is_file():
@@ -377,6 +407,11 @@ def register_file_executor(registry, executor: FileExecutor | None = None, *, ov
     action types" pattern noted in `executors/base.py`.
     """
     executor = executor or FileExecutor()
-    for action_type in FILE_ACTION_TYPES:
-        registry.register_action(action_type, executor, override=override)
+    for action_type, requires_verification in FILE_ACTION_REQUIREMENTS.items():
+        registry.register_action(
+            action_type,
+            executor,
+            requires_verification=requires_verification,
+            override=override,
+        )
     return executor

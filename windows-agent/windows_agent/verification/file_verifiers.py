@@ -63,12 +63,19 @@ class FileCopyVerifier(Verifier):
         if src is None or not dst_param:
             return _failed(method, "src+dst paths", None, "Missing source/destination for verification")
         dst = Path(dst_param)
+        if not src.exists():
+            return _failed(method, f"exists({src})", False, f"Source missing during copy verification: {src}")
+        if not src.is_file():
+            return _failed(method, f"is_file({src})", False, f"Source is not a file: {src}")
         if not dst.exists():
             return _failed(method, f"exists({dst})", False, f"Destination missing after copy: {dst}")
-        # Prefer independent re-hash of the source; fall back to recorded hash.
-        expected_hash = sha256_file(src) if src.is_file() else result.evidence.get("sha256")
+        if not dst.is_file():
+            return _failed(method, f"is_file({dst})", False, f"Destination is not a file: {dst}")
+        # Both fingerprints come from the filesystem. Executor evidence is not
+        # proof and must never substitute for a missing source.
+        expected_hash = sha256_file(src)
         observed_hash = sha256_file(dst)
-        if expected_hash and expected_hash == observed_hash:
+        if expected_hash == observed_hash:
             return _passed(method, expected_hash, observed_hash, "Copy verified: destination matches source")
         return _failed(method, expected_hash, observed_hash, "Copy hash mismatch")
 
