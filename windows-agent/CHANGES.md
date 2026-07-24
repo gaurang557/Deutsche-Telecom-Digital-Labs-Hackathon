@@ -5,6 +5,37 @@ single milestone commit contains, so it can double as the commit body.
 
 ---
 
+## Roadmap and ownership documentation reconciliation
+
+**Summary:** Deferred M8 document→presentation orchestration to M14 planner/LLM
+composition, removed M17 cross-platform readiness from the active roadmap, and
+kept the platform-neutral executor / Windows-adapter boundary without promising
+macOS/Linux delivery.
+
+**Ownership:** M11 is implemented and maintained by the audit teammate; this
+module supplies complete action-level events, contract compatibility, and
+post-integration E2E coverage without building parallel persistence/redaction
+infrastructure. M12 deterministic policy, risk, and confirmation remains
+mandatory execution/safety-module work; the LLM only explains decisions and
+collects responses.
+
+---
+
+## Safety / contract correction pass
+
+**Summary:** Added deterministic per-action `requires_verification` registration
+metadata for all 21 planner-visible actions. Required actions now fail with
+`verifier_missing` before execution when unwired, treat an unexpected
+verification `SKIPPED` as failure, and contain verifier exceptions as structured
+verification failures.
+
+**Corrected:** `file.move` rejects same-file destinations (including resolved
+equivalents and filesystem aliases) without mutation; `FileCopyVerifier` now
+requires and independently hashes both source and destination. Added focused
+regressions and reconciled the canonical action/architecture documentation.
+
+---
+
 ## Milestone 6 — Document (Word) Executor + replace_text verifier
 
 **Summary:** Added the `.docx` document capability — three read-only
@@ -76,8 +107,9 @@ edit would require run splitting/merging at XML level).
   python-docx; §5 marks `document.replace_text` verification Implemented (M6) and
   lists the read-only `document.*` actions as SKIPPED; legend now "through
   Milestone 6".
-- `docs/WALKTHROUGH.md` — milestone map split: M6 docx ✅ (M7–M8 pptx + doc→pptx
-  still planned); `test_document_ops.py` added; suite count updated.
+- `docs/WALKTHROUGH.md` — milestone map split: M6 docx ✅ and M7 presentation
+  planned (M8 was later deferred by the roadmap decision above);
+  `test_document_ops.py` added; suite count updated.
 
 **Risk notes:** document reads = `NONE`; `document.replace_text` = `HIGH` when it
 edits **in place** (overwrites the original), `MEDIUM` when `save_as` writes a
@@ -221,7 +253,8 @@ it was safe to, and gave the LLM a native, read-only view of our audit events.
 **Added**
 - `audit/query.py` — `AuditLogReader` (fetch native `AuditEvent`s as JSON-serialisable
   dicts, filterable by task/action/event-type/time range/limit) + `redact()` seam
-  (no-op until M11). We emit action-level events; the LLM queries/translates them.
+  (existing compatibility scaffolding; the external M11 audit team owns
+  production redaction, persistence, and translation).
 - `tests/test_audit_query.py` — reader tests.
 
 **Deliberately unchanged** (handled by the translation layer / LLM, per team call):
@@ -284,8 +317,8 @@ tree and neither affects nor is affected by other teammates' work.
 **Summary:** Turned the Milestone 0 interfaces into a single, safe execution
 pipeline: `Action → schema validation → registry → policy gateway → executor →
 verification → ActionResult`, with structured audit events emitted around every
-stage. Policy and audit use interfaces + mocks (real engine/persistence arrive
-in M11/M12).
+stage. Policy and audit use interfaces + mocks (real policy arrives in M12;
+shared audit implementation/integration is externally owned in M11).
 
 **Added**
 - `contracts/policy.py` — `PolicyDecision` (deterministic authorization verdict; `action_hash` binds confirmations to the exact action).
@@ -309,8 +342,8 @@ in M11/M12).
 - Verification runs only after a successful execution; a `FAILED` verification forces the overall `ActionResult` to `FAILED`.
 - Evidence remains size-bounded before leaving the dispatcher.
 
-**Not yet implemented (by design):** real deterministic policy (M12), SQLite
-audit persistence + redaction (M11), pause/resume semantics (M13).
+**Not yet implemented (by design):** real deterministic policy (M12),
+external/shared audit integration testing (M11), pause/resume semantics (M13).
 
 **Docs:** added `docs/WALKTHROUGH.md`, `CHANGES.md`; `README.md` and
 `docs/ARCHITECTURE.md` already describe the intended full design.

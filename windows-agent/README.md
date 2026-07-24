@@ -6,9 +6,9 @@ actions, executes them against local files/applications, **independently
 verifies** their effects, and returns structured results.
 
 Windows is the primary target. The final runtime uses only open-source /
-open-weight models and components. The architecture is deliberately split so a
-macOS adapter can be added later without touching the planner, policy, state,
-audit, or action contracts.
+open-weight models and components. Common executors remain platform-neutral and
+Windows UI automation stays behind an adapter, but macOS/Linux implementation
+and testing are not scheduled.
 
 > **One-line safety principle:** the LLM may *propose* actions, but only
 > deterministic code may *authorize* them. This is enforced structurally, not
@@ -26,22 +26,37 @@ audit, or action contracts.
 | Milestone | Scope | Status |
 |-----------|-------|--------|
 | **M0** | Execution contract: shared schemas, `BaseExecutor`, `ActionRegistry`, `Dispatcher`, mock executors, tests | ✅ done |
-| M1 | Deterministic **Policy Engine** (risk classes, `PolicyDecision`, `action_hash`-bound `Confirmation`) | ⏳ next |
-| M2 | Real executors (file/PDF/spreadsheet) + **Verification** | planned |
-| M3 | State machine (pause/resume/cancel/correction) + **Audit** (SQLite, redaction) | planned |
-| M4 | Windows desktop adapter (UI Automation) + browser (Playwright) | planned |
-| M5 | Planner (local LLM) + Voice pipeline (ASR/TTS) | planned |
+| M1 | Policy/verification/audit interfaces and the safe dispatcher pipeline | ✅ done (mock policy/in-memory audit) |
+| M2 | `file.*` executor, independent verifiers, native audit-log reader | ✅ done |
+| M3 | Read-only `pdf.*` executor | ✅ done |
+| M4 | `spreadsheet.*` executor + `write_cell` verifier | ✅ done |
+| M5 | Deterministic multi-app orchestration workflow | deferred to planner integration / M14 |
+| M6 | `document.*` executor + `replace_text` verifier | ✅ done |
+| M7 | Presentation executor | planned |
+| M8 | Document→presentation orchestration | deferred to planner/LLM integration / M14; not hardcoded |
+| M9 | Windows UI Automation adapter | planned |
+| M10 | Browser executor | planned |
+| M11 | Shared audit implementation | external/team-owned; this module supplies action events and integration/E2E tests |
+| M12 | Deterministic policy, risk, and confirmation | mandatory work in this execution/safety module |
+| M13 | Pause/resume/cancel/correction integration | planned |
+| M14 | Planner/LLM integration, including deferred M5/M8 orchestration | planned |
+| M15 | End-to-end regression | planned |
+| M16 | Hardening | planned |
+| M17 | Cross-platform/macOS readiness | removed from active roadmap |
+| M18 | Release/demo freeze | planned |
 
-Only M0 code exists today. The architecture document describes the full
-intended design and marks what is implemented vs planned.
+M0–M4 and M6 code exist today. Desktop, browser, planner/LLM, voice, full state
+orchestration, and shared-audit integration remain planned or externally owned
+as shown above.
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- Dependencies (M0 only, intentionally minimal):
-  - `pydantic>=2.6`, `pytest>=8.0`, `pytest-asyncio>=0.23`
+- Dependencies currently cover the core plus implemented structured-file
+  executors: `pydantic`, `pytest`, `pytest-asyncio`, PyMuPDF, openpyxl, and
+  python-docx (see `requirements.txt` for version floors).
 
 Heavier dependencies (PyMuPDF, openpyxl, python-docx, python-pptx, Playwright,
 pywinauto, faster-whisper, etc.) are added by the milestone that needs them, so
@@ -104,7 +119,8 @@ pytest.ini
 > live in each source file's module docstring and inline comments. This README
 > and `../docs/ARCHITECTURE.md` are intentionally high-level intros — open the file
 > itself for the specifics. The team-shared deliverables — `../docs/ARCHITECTURE.md`
-> and `../docs/ACTION_REFERENCE.md` — live in the repo-root `docs/`.
+> and the canonical planner vocabulary `../docs/ACTION_REFERENCE.md` — live in
+> the repo-root `docs/`.
 
 ## How the execution path works (today)
 

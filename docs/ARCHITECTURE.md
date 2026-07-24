@@ -60,6 +60,9 @@ User voice/text → TaskRequest → Planner → Action
 - A local open-weight LLM turns a `TaskRequest` into a **plan** of `Action`s.
 - The LLM is constrained to an **allow-listed semantic vocabulary** (~55
   actions across file/pdf/spreadsheet/document/presentation/desktop/browser).
+- `ACTION_REFERENCE.md` is the canonical planner-visible runtime vocabulary;
+  names from older shared documents are translated at the integration boundary,
+  not registered as aliases.
 - The LLM output is validated against the `Action` schema; malformed or unknown
   actions are rejected. The planner proposes; it never authorizes, sets risk,
   or approves confirmations.
@@ -72,19 +75,23 @@ backbone everything else plugs into:
   `task_id`, `sequence`, `type`, `target`, `parameters`, `expected_result`,
   `reason`. No authority fields (enforced by `extra="forbid"`).
 - **`ActionRegistry`** (`execution/registry.py`): maps an action `type` string
-  to the executor that handles it. This replaces one giant `execute_action()`
-  full of conditionals; adding a capability = registering a handler. Unknown
-  types return `None` so the caller can fail safely. Duplicate registration
-  raises (guards against accidental clobbering).
+  to immutable registration metadata: the action type, executor, and an
+  explicit `requires_verification` boolean. Registration requires that boolean
+  as a keyword-only argument, so future actions cannot silently default to
+  optional verification. This replaces one giant `execute_action()` full of
+  conditionals; adding a capability = registering a handler and its
+  verification requirement. Unknown types return `None` so the caller can fail
+  safely. Duplicate registration raises (guards against accidental clobbering).
 - **`BaseExecutor`** (`executors/base.py`): the async contract every executor
   implements — `async def execute(action) -> ExecutorResult`. Async-first
   because real executors will do I/O (files, PDF parsing, browser/desktop);
   choosing async now avoids rewriting every executor later.
-- **`Dispatcher`** (`execution/dispatcher.py`): the **single execution path**.
-  Today: `registry lookup → execute → bound evidence → ActionResult`. It is
-  also the one place the deterministic cross-cutting stages will be wired, in
-  this exact order:
-  `validate → [policy authorize] → [confirmation] → execute → [verification] → [audit]`.
+- **`Dispatcher`** (`execution/dispatcher.py`): the **single execution path**:
+  `validate → registry lookup → policy authorize → required-verifier guard →
+  execute → verification → bound ActionResult`, with audit events around each
+  stage. Policy remains authoritative and always runs before an executor. After
+  ALLOW, an action marked `requires_verification` fails with
+  `verifier_missing` before execution if its verifier is absent.
   Having one path means safety/verification/audit can never be bypassed by an
   individual executor.
 
@@ -103,7 +110,10 @@ Executor preference order (most reliable first):
 1. **Structured file/application APIs** — PyMuPDF (PDF) **[Implemented — M3, read
    only]**, openpyxl (XLSX) **[Implemented — M4, read + write_cell]**, python-docx
    (DOCX) **[Implemented — M6, read + replace_text]**, python-pptx (PPTX)
-   [Planned]. Reading (or writing) a cell — or a PDF page — via a library is far
+   **[Planned — M7]**. The former M8 document→presentation workflow is deferred
+   to planner/LLM integration in M14: the planner composes M6 and M7 actions
+   rather than a hardcoded execution workflow. Reading (or writing) a cell — or
+   a PDF page — via a library is far
    more reliable than scraping a GUI. The read-only `pdf.*` actions
    (`pdf.page_count`, `pdf.get_metadata`, `pdf.read_text`, `pdf.search`) live in
    `executors/pdf_ops.py`. The `spreadsheet.*` actions (`list_sheets`,
@@ -157,6 +167,13 @@ text are always **untrusted data**.
   effects), so no verifier is registered and the VerificationRegistry correctly
   returns `SKIPPED` — the same treatment as
   `file.exists`/`file.list`/`file.read_text`.
+- Verification requirements are deterministic action-registration metadata,
+  not planner input and not inferred from risk. A required verifier must be
+  present before execution; if it unexpectedly returns `SKIPPED`, the
+  dispatcher converts that outcome to `FAILED`.
+- Exceptions raised by a verifier or the verification registry after execution
+  are contained as a failed `VerificationResult` (including the exception type)
+  and emit `verification_failed`; they do not escape the dispatcher.
 - `expected_result` on the `Action` feeds the verification assertion.
 - **Consequential actions are never auto-retried.** Retries are limited and
   logged with evidence.
@@ -172,8 +189,14 @@ text are always **untrusted data**.
 - Because authorization is bound to a specific action (see §7), an interruption
   or change invalidates any pending confirmation.
 
-## 7. Permission and safety model (the core)  **[Planned — M1; enforced structurally in M0]**
+## 7. Permission and safety model (the core)  **[Structural gateway implemented; deterministic policy planned — M12]**
 
+- M12 is mandatory work owned by this execution/safety module, not by the LLM:
+  **M12A** implements deterministic risk classification and rules, **M12B**
+  validates confirmation tokens bound to the exact `action_hash`, and **M12C**
+  integrates the real policy with the dispatcher and adds fail-closed tests.
+  The LLM may explain a `PolicyDecision` and collect a user's response; it
+  cannot classify risk, authorize an action, or validate confirmation.
 - **Deterministic risk classification** into fixed classes (aligned with the
   shared team `RiskLevel` vocabulary, plus our `FORBIDDEN`):
   `NONE`, `LOW`, `MEDIUM`, `HIGH`, `CONSEQUENTIAL`, `FORBIDDEN`. Computed by pure
@@ -204,25 +227,30 @@ text are always **untrusted data**.
   `UNTRUSTED_CONTENT_DETECTED` audit event is emitted when injection-like text
   is seen, but such content can never change an authorization outcome.
 
-## 8. Audit  **[Planned — M3]**
+## 8. Audit  **[Action-level emission implemented; M11 externally owned]**
 
-- Audit events are produced **centrally around the execution lifecycle** (in
-  the dispatcher), not via ad-hoc logging scattered through executors.
-- Lifecycle event types include: `TASK_STARTED`, `TRANSCRIPT_RECEIVED`,
-  `PLAN_CREATED/REVISED`, `ACTION_PROPOSED`, `POLICY_ALLOWED/DENIED/
-  CONFIRMATION_REQUIRED`, `CONFIRMATION_REQUESTED/ACCEPTED/REJECTED/EXPIRED`,
-  `ACTION_STARTED/COMPLETED/FAILED/CANCELLED`, `VERIFICATION_STARTED/PASSED/
-  FAILED`, `TASK_PAUSED/RESUMED/CORRECTED/CANCELLED`, `TASK_COMPLETED/FAILED`,
-  `UNTRUSTED_CONTENT_DETECTED`.
-- **Native audit-log reader** (`audit/query.py`, `AuditLogReader`) **[Implemented]**:
-  exposes our native `AuditEvent`s to the LLM as JSON-serialisable dicts,
-  filterable by task/action/event-type/time range/limit. A `redact()` seam is
-  applied on read (no-op until M11). We own and emit action-level events; the LLM
-  queries and translates them rather than us mapping to a shared schema.
-- **Redaction** is central: all audit data passes through one redaction layer
-  before persistence. Secrets, passwords, tokens, cookies, and complete
-  document contents are never stored.
-- Persistence uses **SQLite** (no server; portable, queryable history).
+- This module owns complete **action-level** audit event emission around the
+  execution lifecycle, bounded/JSON-serialisable details, and compatibility
+  with the audit teammate's sink/query contract. Events are produced centrally
+  in the dispatcher, not via ad-hoc executor logging.
+- Emitted action-level events cover action proposal, policy outcomes,
+  execution start/completion/failure/cancellation, and verification
+  start/pass/failure/skip. Task aggregation and broader lifecycle records belong
+  to the shared audit system.
+- M11 implementation and maintenance are external/team-owned. This module will
+  not implement SQLite persistence, security redaction, retention, task
+  aggregation, query UI, shared-schema translation, or a parallel audit system.
+- `AuditLogReader` and its current no-op `redact()` seam are existing
+  compatibility scaffolding only. They do not commit this module to maintaining
+  duplicate audit infrastructure or performing security redaction. The
+  teammate-owned audit boundary must own the required redaction before the final
+  demo.
+- The LLM may consume only events permitted through the teammate-owned
+  redaction/audit boundary. It never decides what is logged and never performs
+  security redaction.
+- After LLM/shared-audit integration, this module owns integration/E2E tests
+  proving action events are delivered, translated and queried as agreed, and
+  sensitive data is handled at the teammate-owned redaction/audit boundary.
 - Evidence is **bounded** everywhere (the dispatcher already caps string and
   collection sizes) so logs and planner context never contain whole
   PDFs/workbooks/DOM trees.
@@ -261,13 +289,17 @@ for authorization, risk labelling, verification, or code/command execution.
   now avoids rewriting every executor and the dispatcher later.
 - **Bounded evidence by default.** Protects against context bloat, cost, and
   feeding large untrusted blobs to the LLM.
-- **Fail-closed everywhere.** Unknown action → `FAILED`; executor exception →
-  contained `FAILED`; missing confirmation → no execution; ambiguity → clarify.
+- **Fail-closed everywhere.** Unknown action → `FAILED`; executor/verifier
+  exception → contained `FAILED`; required verifier missing → no execution;
+  missing confirmation → no execution; ambiguity → clarify.
 - **Structured file APIs over GUI scraping** where possible for reliability,
   with accessibility and then coordinate clicking as graded fallbacks.
-- **Windows-first, adapter-isolated.** Planner/policy/state/audit/contracts are
-  platform-agnostic; only the desktop adapter is platform-specific, so a macOS
-  adapter can be added without touching the core.
+- **Windows-first, adapter-isolated.** Common executors and
+  planner/policy/state/audit contracts remain platform-neutral, while
+  Windows-specific UI automation stays behind an adapter. M17 cross-platform/
+  macOS readiness has been removed from the active roadmap due to time
+  constraints; this boundary does not promise or schedule macOS/Linux
+  implementation or testing.
 - **Milestone-by-milestone delivery.** Each milestone is tested before the next
   begins, so the deterministic execution/safety core is proven before the LLM
   and voice layers are connected.

@@ -84,16 +84,20 @@ decision. See the guards in `execution/dispatcher.py`.
 | M2 | `file.*` executor (`executors/file_ops.py`) + verifiers (`verification/file_verifiers.py`) + native audit-log reader (`audit/query.py`) | ✅ |
 | M3 | read-only PDF executor (`executors/pdf_ops.py`) | ✅ |
 | M4 | spreadsheet executor (`executors/spreadsheet_ops.py`) + write verifier (`verification/spreadsheet_verifiers.py`) | ✅ |
-| M5 | first deterministic multi-app workflow (PDF→spreadsheet) | planned |
+| M5 | first deterministic multi-app workflow (PDF→spreadsheet) | deferred to planner integration / M14 |
 | M6 | docx executor (`executors/document_ops.py`) + replace_text verifier (`verification/document_verifiers.py`) | ✅ |
-| M7–M8 | pptx executor + doc→pptx workflow | planned |
+| M7 | presentation executor | planned |
+| M8 | document→presentation orchestration | deferred to planner/LLM integration / M14; not a hardcoded execution workflow |
 | M9 | Windows desktop adapter (UI Automation) | planned |
 | M10 | browser executor (Playwright) | planned |
-| M11 | audit persistence (SQLite) + redaction | planned |
-| M12 | real deterministic policy + confirmation binding | planned |
+| M11 | shared audit implementation | external/team-owned; this module guarantees action events + sink/query compatibility and tests the integrated boundary |
+| M12 | deterministic policy, risk, and confirmation binding | planned in this execution/safety module |
 | M13 | pause/resume/cancel/correction integration | planned |
-| M14 | planner/LLM tool integration | planned |
-| M15–M18 | E2E regression, hardening, macOS readiness, freeze | planned |
+| M14 | planner/LLM tool integration, including deferred M5/M8 orchestration | planned |
+| M15 | end-to-end regression | planned |
+| M16 | hardening | planned |
+| M17 | cross-platform/macOS readiness | removed from active roadmap due to time constraints |
+| M18 | release/demo freeze | planned |
 
 ## 6. How to run
 

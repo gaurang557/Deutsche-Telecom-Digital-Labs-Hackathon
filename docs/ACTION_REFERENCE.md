@@ -2,8 +2,10 @@
 
 **Audience:** whoever builds the planner / LLM layer that turns a user request
 into actions for this agent.
-**Status:** as of **Milestone 6**. This file is maintained per milestone — new
-executors add new action types here. If an action type is not listed under
+**Status:** as of **Milestone 6**. This is the **authoritative, frozen
+planner-visible runtime vocabulary**. Its 21 action names are the exact names
+accepted by the current runtime; there are no runtime aliases. New executors
+must update this contract explicitly. If an action type is not listed under
 "Available actions", it does **not** exist yet and must not be emitted.
 
 > Keep this in sync with code: action types come from
@@ -96,14 +98,15 @@ Independent confirmation that the action actually changed state as intended.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | enum: `passed` \| `failed` \| `skipped` | `skipped` = no verifier for this type (e.g. read-only). |
+| `status` | enum: `passed` \| `failed` \| `skipped` | `skipped` is valid only for an action explicitly registered as not requiring verification (e.g. read-only). |
 | `method` | string | How it was checked, e.g. `"re-hash source and destination"`. |
 | `expected` | any | What we expected to observe. |
 | `observed` | any | What was actually observed. |
 | `message` | string | Human-readable summary. |
 
 A **`failed` verification forces the overall `status` to `failed`**, even if the
-executor thought it succeeded.
+executor thought it succeeded. A required verifier returning `skipped` is
+converted to a failed verification.
 
 ### `ActionError`
 
@@ -149,6 +152,30 @@ executor thought it succeeded.
 ---
 
 ## 3. Available actions
+
+The registry classifies verification requirements deterministically:
+
+- **Required:** `file.copy`, `file.move`, `file.write_text`, `file.mkdir`,
+  `file.delete`, `spreadsheet.write_cell`, `document.replace_text`.
+- **Not required:** `file.exists`, `file.list`, `file.read_text`,
+  `pdf.page_count`, `pdf.get_metadata`, `pdf.read_text`, `pdf.search`,
+  `spreadsheet.list_sheets`, `spreadsheet.dimensions`,
+  `spreadsheet.read_cell`, `spreadsheet.read_range`, `document.read_text`,
+  `document.get_metadata`, `document.find`.
+
+After policy returns ALLOW, a required action with no registered verifier fails
+with `verifier_missing` **before its executor runs or any side effect occurs**.
+
+Older shared documents may use the following names. These are compatibility
+translations for planner integration only, not runtime aliases:
+
+- `file.create_folder` → `file.mkdir`
+- `file.rename` → `file.move`
+- `pdf.get_page_count` → `pdf.page_count`
+- `pdf.extract_text` → `pdf.read_text`
+- `pdf.read_page` → `pdf.read_text`
+- `document.read` → `document.read_text`
+- `document.replace_text_preserve_format` → `document.replace_text`
 
 Legend for **Risk** — set by our deterministic policy; **the planner only
 *ingests* it, it never sets it** (informational here, enforced by policy in a
@@ -450,6 +477,7 @@ Shared codes (from `ErrorCode`):
 | `policy_denied` | Policy outcome DENY. |
 | `confirmation_required` | Policy outcome CONFIRM. |
 | `clarification_required` | Policy outcome CLARIFY. |
+| `verifier_missing` | Policy allowed an action that requires verification, but no verifier was registered; executor did not run. |
 | `verification_failed` | Executed, but independent re-observation disagreed. |
 | `cancelled` | Cancelled before start. |
 
