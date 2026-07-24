@@ -17,10 +17,9 @@ there is no state change to confirm.
 INDEPENDENCE
 ------------
 The verifier opens the workbook itself (it does not trust the executor's live
-handle) so a buggy/lying executor cannot fake a pass. The intended value + sheet
-+ cell are taken from the ExecutorResult evidence (falling back to
-action.parameters), because that is the executor's stated intent that we are
-holding it to.
+handle) and takes the intended path, sheet, cell, and value only from the
+authorized Action. ExecutorResult evidence is never accepted as the expectation,
+so a buggy/lying executor cannot redefine what counts as success.
 
 NUMBER-vs-STRING COMPARISON
 ---------------------------
@@ -78,18 +77,12 @@ class SpreadsheetWriteCellVerifier(Verifier):
     @staticmethod
     def _check(action: Action, result: ExecutorResult) -> VerificationResult:
         method = "reload workbook and re-read cell"
-        evidence = result.evidence or {}
         params = action.parameters or {}
 
-        path_str = evidence.get("path") or action.target
-        cell_ref = evidence.get("cell") or params.get("cell")
-        # Prefer the sheet the executor actually wrote to (its evidence), since
-        # a new workbook may have named/renamed its default sheet.
-        sheet_name = evidence.get("sheet") or params.get("sheet")
-        # The intended value: what the executor reports it wrote (normalised),
-        # falling back to the action's own parameter.
-        expected = evidence.get("value") if "value" in evidence else params.get("value")
-        expected = _normalize_value(expected)
+        path_str = action.target
+        cell_ref = params.get("cell")
+        sheet_name = params.get("sheet")
+        expected = _normalize_value(params.get("value"))
 
         if not path_str or not isinstance(cell_ref, str):
             return _failed(method, "path+cell", None, "Missing path/cell for verification")

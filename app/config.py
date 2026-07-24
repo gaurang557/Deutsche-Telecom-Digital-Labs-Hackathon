@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     ollama_timeout_seconds: float = 60.0
+    enable_structured_actions: bool = True
 
     # Speech-to-text (faster-whisper). Used from the STT chunk onward.
     whisper_model: str = "base.en"

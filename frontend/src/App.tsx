@@ -160,12 +160,24 @@ export default function App() {
     const approvedActionIds = plan.actions
       .filter((action) => action.requires_confirmation)
       .map((action) => action.action_id);
+    const approvedActionHashes = Object.fromEntries(
+      plan.actions
+        .filter(
+          (action) =>
+            action.requires_confirmation && action.confirmation_hash != null,
+        )
+        .map((action) => [action.action_id, action.confirmation_hash as string]),
+    );
 
     setExecuting(true);
     setTaskStatus("running");
     setExecutionError(null);
     try {
-      const response = await executePlan(plan.plan_id, approvedActionIds);
+      const response = await executePlan(
+        plan.plan_id,
+        approvedActionIds,
+        approvedActionHashes,
+      );
       setExecutionResult(response);
       setTaskStatus(response.status);
       setTaskEvents((await getTask(plan.plan_id)).events);
@@ -178,6 +190,21 @@ export default function App() {
       );
     } finally {
       setExecuting(false);
+    }
+  };
+
+  const rejectConfirmation = async () => {
+    const plan = planningResult?.plan;
+    if (!plan || executing) return;
+    setExecutionError(null);
+    try {
+      const response = await executePlan(plan.plan_id, [], {});
+      setExecutionResult(response);
+      setTaskEvents((await getTask(plan.plan_id)).events);
+    } catch (reason: unknown) {
+      setExecutionError(
+        reason instanceof Error ? reason.message : "Could not reject the action",
+      );
     }
   };
 
@@ -211,6 +238,7 @@ export default function App() {
         request_id: detail.request_id,
         control_intent: null,
         plan: detail.plan,
+        refusal: null,
       });
       setExecutionResult(
         detail.results.length
@@ -410,6 +438,19 @@ export default function App() {
             </article>
           )}
 
+          {planningResult?.refusal && (
+            <article className="message message--assistant">
+              <div className="assistant-avatar">V</div>
+              <div className="message__content">
+                <p>{planningResult.refusal}</p>
+                <small>
+                  I stopped here on purpose rather than guessing at a plan that
+                  would fail.
+                </small>
+              </div>
+            </article>
+          )}
+
           {planningResult?.control_intent && (
             <article className="message message--assistant">
               <div className="assistant-avatar">V</div>
@@ -458,7 +499,7 @@ export default function App() {
                     ))}
                   </ol>
 
-                  {!executionResult && (
+                  {(!executionResult || executionResult.status === "blocked") && (
                     <div className="plan-card__footer">
                       <p>
                         Nothing runs until you approve this plan.
@@ -481,6 +522,17 @@ export default function App() {
                           </>
                         )}
                       </button>
+                      {planningResult.plan.actions.some(
+                        (action) => action.requires_confirmation,
+                      ) && (
+                        <button
+                          type="button"
+                          onClick={() => void rejectConfirmation()}
+                          disabled={executing}
+                        >
+                          Reject consequential step
+                        </button>
+                      )}
                       {executing && (
                         <div className="task-controls" aria-label="Task controls">
                           {taskStatus === "paused" ? (

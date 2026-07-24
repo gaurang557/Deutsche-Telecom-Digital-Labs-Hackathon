@@ -33,6 +33,7 @@ without a registered verifier.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping  # used for runtime isinstance checks
 from typing import Any
 
@@ -121,6 +122,21 @@ class Dispatcher:
                        summary="cancelled before start")
             return self._simple_result(action, ActionStatus.CANCELLED, ErrorCode.CANCELLED,
                                        "Run was cancelled before this action started.")
+        while context.is_paused():
+            await asyncio.sleep(0.05)
+            if context.is_cancelled():
+                self._emit(
+                    AuditEventType.ACTION_CANCELLED,
+                    action,
+                    outcome="cancelled",
+                    summary="cancelled while paused",
+                )
+                return self._simple_result(
+                    action,
+                    ActionStatus.CANCELLED,
+                    ErrorCode.CANCELLED,
+                    "Run was cancelled while waiting to resume.",
+                )
 
         # 3) Registry lookup — unknown type fails closed.
         registration = self._registry.get_action_registration(action.type)

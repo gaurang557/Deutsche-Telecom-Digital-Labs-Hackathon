@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,7 +15,10 @@ from app.planning.planner import OllamaPlanner, Planner
 from app.planning.repository import PlanRepository
 from app.planning.service import PlanningService
 from app.schemas import (
+    ActionResult,
+    ActionStatus,
     ExecutePlanRequest,
+    ExecutionStatus,
     HealthResponse,
     PlanControlRequest,
     PlanExecutionResponse,
@@ -46,8 +49,15 @@ def get_plan_repository() -> PlanRepository:
 
 
 @lru_cache
-def get_desktop_executor() -> DesktopExecutor:
-    return DesktopExecutor()
+def get_desktop_executor() -> Any:
+    settings = get_settings()
+    if not settings.enable_structured_actions:
+        return DesktopExecutor()
+    from app.execution.hybrid import HybridExecutor, StoreAuditSink
+
+    repository = get_plan_repository()
+    audit = StoreAuditSink(repository)
+    return HybridExecutor(audit=audit, structured_enabled=True)
 
 
 def get_planning_service(
@@ -91,7 +101,7 @@ async def execute_plan(
     plan_id: UUID,
     request: ExecutePlanRequest,
     repository: Annotated[PlanRepository, Depends(get_plan_repository)],
-    executor: Annotated[DesktopExecutor, Depends(get_desktop_executor)],
+    executor: Annotated[Any, Depends(get_desktop_executor)],
 ) -> PlanExecutionResponse:
     """Execute a stored plan after explicit approval from the local user."""
     plan = repository.get(plan_id)
@@ -100,16 +110,53 @@ async def execute_plan(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Plan not found or the API process was restarted",
         )
+    for action in plan.actions:
+        if not action.requires_confirmation or "." not in str(action.type):
+            continue
+        provided = request.approved_action_hashes.get(action.action_id)
+        if not action.confirmation_hash or provided != action.confirmation_hash:
+            repository.log_event(
+                plan_id,
+                "confirmation_rejected",
+                f"Confirmation rejected for step {action.sequence}; no action ran",
+            )
+            return PlanExecutionResponse(
+                plan_id=plan.plan_id,
+                status=ExecutionStatus.BLOCKED,
+                results=[
+                    ActionResult(
+                        action_id=action.action_id,
+                        status=ActionStatus.BLOCKED,
+                        error="Exact action-bound confirmation is required",
+                    )
+                ],
+            )
+        repository.log_event(
+            plan_id,
+            "confirmation_accepted",
+            f"Exact confirmation accepted for step {action.sequence}",
+        )
+
     if not repository.claim_execution(plan_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This plan has already been submitted for execution",
         )
-    response = await executor.execute_plan(
-        plan,
-        request.approved_action_ids,
-        control_state=lambda: repository.status(plan_id),
-    )
+    from app.execution.hybrid import HybridExecutor
+
+    if isinstance(executor, HybridExecutor):
+        response = await executor.execute_plan(
+            plan,
+            request.approved_action_ids,
+            control_state=lambda: repository.status(plan_id),
+            approved_action_hashes=request.approved_action_hashes,
+        )
+    else:
+        response = await executor.execute_plan(
+            plan,
+            request.approved_action_ids,
+            control_state=lambda: repository.status(plan_id),
+        )
     repository.complete(response)
     return response
 

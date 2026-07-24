@@ -7,5 +7,12 @@ mock policies so the pipeline can be built and tested end-to-end now.
 
 from .base import Policy
 from .mock import AllowAllPolicy, ConfigurablePolicy, action_hash
+from .sprint import SprintPolicy
 
-__all__ = ["Policy", "AllowAllPolicy", "ConfigurablePolicy", "action_hash"]
+__all__ = [
+    "Policy",
+    "AllowAllPolicy",
+    "ConfigurablePolicy",
+    "SprintPolicy",
+    "action_hash",
+]

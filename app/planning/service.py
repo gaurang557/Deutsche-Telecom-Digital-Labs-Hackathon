@@ -1,3 +1,4 @@
+from app.planning.capabilities import detect_unsupported_request
 from app.planning.control import detect_control_intent
 from app.planning.normalizer import build_action_plan
 from app.planning.planner import Planner
@@ -16,6 +17,13 @@ class PlanningService:
             return PlanningResponse(
                 request_id=request.request_id,
                 control_intent=control_intent,
+            )
+
+        refusal = detect_unsupported_request(request.text)
+        if refusal is not None:
+            return PlanningResponse(
+                request_id=request.request_id,
+                refusal=refusal,
             )
 
         draft = await self._planner.create_draft(request)

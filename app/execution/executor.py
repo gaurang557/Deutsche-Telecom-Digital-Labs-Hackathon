@@ -264,15 +264,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _resolve_file(action: Action) -> Path:
-        target = action.target.strip()
-        known_folders = {
-            "desktop": Path.home() / "Desktop",
-            "documents": Path.home() / "Documents",
-            "downloads": Path.home() / "Downloads",
-        }
-        path = known_folders.get(target.casefold(), Path(target).expanduser())
-        if not path.is_absolute():
-            path = path.resolve()
+        path = DesktopExecutor._resolve_user_path(action.target)
 
         if path.is_file():
             return path
@@ -301,6 +293,31 @@ class DesktopExecutor:
             qualifier = f" with extension {extension}" if extension else ""
             raise ValueError(f"No files found in {path}{qualifier}")
         return max(candidates, key=lambda candidate: candidate.stat().st_mtime)
+
+    @staticmethod
+    def _resolve_user_path(value: str) -> Path:
+        """Resolve known folders case-insensitively and reject ambiguous Windows paths."""
+        target = value.strip()
+        if not target:
+            raise ValueError("File path cannot be empty")
+        path = Path(target).expanduser()
+        if path.is_absolute():
+            return path.resolve(strict=False)
+
+        parts = [part for part in target.replace("\\", "/").split("/") if part]
+        known_folders = {
+            "desktop": Path.home() / "Desktop",
+            "documents": Path.home() / "Documents",
+            "downloads": Path.home() / "Downloads",
+        }
+        root = known_folders.get(parts[0].casefold())
+        if root is not None:
+            return root.joinpath(*parts[1:]).resolve(strict=False)
+        if platform.system() == "Windows":
+            raise ValueError(
+                "Relative Windows paths must begin with Desktop, Documents, or Downloads"
+            )
+        return path.resolve(strict=False)
 
     @staticmethod
     def _focus_application(action: Action) -> dict[str, Any]:
@@ -424,7 +441,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _read_file(action: Action) -> dict[str, Any]:
-        path = Path(action.target).expanduser()
+        path = DesktopExecutor._resolve_user_path(action.target)
         content = path.read_text(encoding="utf-8")
         return {
             "path": str(path),
@@ -435,11 +452,11 @@ class DesktopExecutor:
 
     @staticmethod
     def _copy_file_content(action: Action) -> dict[str, Any]:
-        source = Path(action.target).expanduser()
+        source = DesktopExecutor._resolve_user_path(action.target)
         destination_value = action.parameters.get("destination")
         if not isinstance(destination_value, str):
             raise ValueError("copy_file_content requires a destination parameter")
-        destination = Path(destination_value).expanduser()
+        destination = DesktopExecutor._resolve_user_path(destination_value)
         overwrite = action.parameters.get("overwrite", False)
         if not isinstance(overwrite, bool):
             raise ValueError("copy_file_content overwrite must be true or false")
@@ -458,7 +475,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _create_file(action: Action) -> dict[str, Any]:
-        path = Path(action.target).expanduser()
+        path = DesktopExecutor._resolve_user_path(action.target)
         if path.exists():
             raise RuntimeError("Refusing to replace an existing file with create_file")
         content = action.parameters.get("content", "")
@@ -470,11 +487,11 @@ class DesktopExecutor:
 
     @staticmethod
     def _move_file(action: Action) -> dict[str, Any]:
-        source = Path(action.target).expanduser()
+        source = DesktopExecutor._resolve_user_path(action.target)
         destination_value = action.parameters.get("destination")
         if not isinstance(destination_value, str):
             raise ValueError("move_file requires a destination parameter")
-        destination = Path(destination_value).expanduser()
+        destination = DesktopExecutor._resolve_user_path(destination_value)
         if destination.exists():
             raise RuntimeError("Refusing to overwrite the move destination")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -483,7 +500,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _overwrite_file(action: Action) -> dict[str, Any]:
-        path = Path(action.target).expanduser()
+        path = DesktopExecutor._resolve_user_path(action.target)
         content = action.parameters.get("content")
         if not isinstance(content, str):
             raise ValueError("overwrite_file requires text content")
@@ -494,7 +511,7 @@ class DesktopExecutor:
     def _delete_file(action: Action) -> dict[str, Any]:
         from send2trash import send2trash
 
-        path = Path(action.target).expanduser()
+        path = DesktopExecutor._resolve_user_path(action.target)
         if not path.is_file():
             raise ValueError("delete_file target must be an existing file")
         send2trash(str(path))

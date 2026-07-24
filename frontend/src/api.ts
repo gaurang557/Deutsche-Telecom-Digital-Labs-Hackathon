@@ -22,6 +22,7 @@ export interface PlannedAction {
   description: string;
   risk: "low" | "medium" | "high";
   requires_confirmation: boolean;
+  confirmation_hash: string | null;
 }
 
 export interface PlanningResponse {
@@ -32,6 +33,8 @@ export interface PlanningResponse {
     summary: string;
     actions: PlannedAction[];
   } | null;
+  /** Present when no available action can satisfy the request. */
+  refusal: string | null;
 }
 
 export interface ActionResult {
@@ -123,11 +126,15 @@ export async function createPlan(
 export async function executePlan(
   planId: string,
   approvedActionIds: string[],
+  approvedActionHashes: Record<string, string> = {},
 ): Promise<PlanExecutionResponse> {
   const response = await fetch(`/api/v1/plans/${planId}/execute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approved_action_ids: approvedActionIds }),
+    body: JSON.stringify({
+      approved_action_ids: approvedActionIds,
+      approved_action_hashes: approvedActionHashes,
+    }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
