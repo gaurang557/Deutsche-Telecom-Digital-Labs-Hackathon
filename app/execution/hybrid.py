@@ -36,6 +36,7 @@ from app.structured_actions import (
     REQUIRES_EXISTING_TARGET_ACTIONS,
     STRUCTURED_ACTION_TYPES,
     UNTRUSTED_CONTENT_ACTIONS,
+    compile_reference_regex,
 )
 
 _WINDOWS_AGENT_ROOT = Path(__file__).resolve().parents[2] / "windows-agent"
@@ -523,8 +524,10 @@ def _resolve_references(
         if not isinstance(regex, str) or len(regex) > 300:
             raise ValueError("Reference regex must be a bounded string")
         # A model-supplied pattern is untrusted input: it may not compile at all.
+        # The shared compile path, so the plan-time check that already approved
+        # this pattern used exactly the same flags.
         try:
-            compiled = re.compile(regex)
+            compiled = compile_reference_regex(regex)
         except re.error as exc:
             raise ValueError(f"Reference regex does not compile: {exc}") from exc
         subject = str(resolved)[:5000]

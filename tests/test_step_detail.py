@@ -22,11 +22,14 @@ about:
 
 # ruff: noqa: I001
 
+import re
 from uuid import uuid4
 
 import pytest
 
+from app.execution import hybrid
 from app.execution.hybrid import _resolve_references
+from app.planning import capabilities
 from app.schemas import ActionResult, ActionStatus, VerificationResult
 from app.step_detail import (
     MAX_EXCERPT_CHARS,
@@ -35,6 +38,7 @@ from app.step_detail import (
     MAX_TABLE_ROWS,
     build_step_detail,
 )
+from app.structured_actions import REFERENCE_REGEX_FLAGS, compile_reference_regex
 
 
 def _result(
@@ -554,3 +558,128 @@ def test_the_diagnosis_excerpt_is_redacted() -> None:
         _resolve_references(reference, _prior("token sk-abcdefghijklmnop here"))
 
     assert "sk-abcdefghijklmnop" not in str(caught.value)
+
+
+# ── a label's capitalisation is not something a planner can be held to ───────
+#
+# The live workflow-1 blocker was one letter: the planner wrote `revenue:` and the
+# PDF says `Revenue:`. What that plan got RIGHT is what makes the leniency safe —
+# it aimed at Revenue rather than the `Operating Profit` line planted next to it,
+# and it used a proper capture group. Only the capitalisation was wrong.
+_FIXTURE_TEXT = (
+    "Quarterly Region Report - Q3 Prepared for PS2 agent testing. "
+    "Executive summary: North Region Revenue: 27.4 "
+    "North Region Operating Profit: 6.1 South Region Revenue: 31.8"
+)
+
+
+def test_the_live_lowercase_pattern_now_finds_the_value() -> None:
+    resolved = _resolve_references(
+        {
+            "$ref": "read_source.evidence.text",
+            "regex": r"revenue: ([0-9.]+)",
+            "group": 1,
+            "coerce": "number",
+        },
+        _prior(_FIXTURE_TEXT),
+    )
+
+    assert resolved == 27.4
+
+
+def test_matching_leniently_does_not_alter_the_captured_value() -> None:
+    """A matching leniency, not a value transformation.
+
+    The pattern is matched without regard to case; what it finds is returned with
+    the document's own casing, byte for byte.
+    """
+    resolved = _resolve_references(
+        {
+            "$ref": "read_source.evidence.text",
+            "regex": r"north region (\w+): 27\.4",
+            "group": 1,
+        },
+        _prior(_FIXTURE_TEXT),
+    )
+
+    # The pattern was written in lowercase throughout; the value comes back with
+    # the capital R the document actually uses.
+    assert resolved == "Revenue"
+
+
+def test_case_insensitivity_does_not_reach_past_a_real_mismatch() -> None:
+    """It may only forgive case. A pattern that is wrong in any other way still fails.
+
+    The `Operating Profit` distractor matters here: differing capitalisation is
+    forgiven, differing words are not, so the fixture's trap still catches nothing.
+    """
+    for regex in (
+        r"operating revenue: ([0-9.]+)",  # words that are not in the text
+        r"revenue = ([0-9.]+)",  # punctuation that is not in the text
+        r"west region revenue: ([0-9.]+)",  # a region that is not in the text
+    ):
+        with pytest.raises(ValueError, match="did not match"):
+            _resolve_references(
+                {"$ref": "read_source.evidence.text", "regex": regex, "group": 1},
+                _prior(_FIXTURE_TEXT),
+            )
+
+
+def test_the_distractor_is_still_excluded_when_case_is_ignored() -> None:
+    """Ignoring case must not let a Revenue pattern drift onto Operating Profit."""
+    resolved = _resolve_references(
+        {
+            "$ref": "read_source.evidence.text",
+            "regex": r"revenue: ([0-9.]+)",
+            "group": 1,
+            "coerce": "number",
+        },
+        _prior(_FIXTURE_TEXT),
+    )
+
+    assert resolved != 6.1  # the Operating Profit figure
+
+
+def test_plan_time_and_execution_time_compile_with_the_same_flags() -> None:
+    """One shared compile path, asserted rather than assumed.
+
+    A plan-time check stricter or laxer than the executor would approve a plan the
+    executor then refuses. That disagreement is the ordering bug that produced an
+    unexplained 422 earlier in this project, so the two share one function.
+    """
+    # Both sides hold the same function object, not two copies of a convention.
+    assert capabilities.compile_reference_regex is compile_reference_regex
+    assert hybrid.compile_reference_regex is compile_reference_regex
+    assert compile_reference_regex(r"revenue: (\d+)").flags == (
+        re.compile(r"revenue: (\d+)", REFERENCE_REGEX_FLAGS).flags
+    )
+    assert REFERENCE_REGEX_FLAGS & re.IGNORECASE
+
+
+def test_a_case_differing_pattern_passes_plan_time_validation_too() -> None:
+    """Whatever the executor will match, the plan-time check must also accept."""
+    reference = {
+        "$ref": "read_source.evidence.text",
+        "regex": r"revenue: ([0-9.]+)",
+        "group": 1,
+    }
+
+    assert capabilities.find_invalid_reference_group(reference) is None
+    assert _resolve_references(reference, _prior(_FIXTURE_TEXT)) == "27.4"
+
+
+def test_ignoring_case_does_not_change_which_groups_a_pattern_has() -> None:
+    """The group check is about parentheses, and case cannot add or remove one."""
+    assert compile_reference_regex(r"revenue: [0-9.]+").groups == 0
+    assert compile_reference_regex(r"revenue: ([0-9.]+)").groups == 1
+    assert "value" in compile_reference_regex(r"revenue: (?P<value>[0-9.]+)").groupindex
+
+    with pytest.raises(ValueError, match="capture group"):
+        _resolve_references(
+            {
+                "$ref": "read_source.evidence.text",
+                "regex": r"revenue: [0-9.]+",
+                "group": 1,
+            },
+            _prior(_FIXTURE_TEXT),
+        )

@@ -32,6 +32,7 @@ from app.structured_actions import (
     FAMILY_EXTENSIONS,
     PATH_LIKE_PARAMETERS,
     action_mutates,
+    compile_reference_regex,
     is_absent_path_value,
     required_parameters_for,
 )
@@ -371,7 +372,9 @@ def find_invalid_reference_group(parameters: Any, *, depth: int = 0) -> str | No
     if regex is None or not isinstance(regex, str):
         return None
     try:
-        compiled = re.compile(regex)
+        # The shared compile path, so this check and the executor can never
+        # disagree about the flags a `$ref` pattern is matched with.
+        compiled = compile_reference_regex(regex)
     except re.error as exc:
         return f"the regex {regex!r} is not a valid pattern ({exc})."
     group = parameters.get("group", 1)

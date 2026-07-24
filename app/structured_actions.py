@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any
@@ -205,6 +206,40 @@ def action_identity_hash(action_type: str, target: str | None, parameters: dict[
 #: value (`content: ""` writes an empty file), so blankness is not read as
 #: absence anywhere else.
 PATH_LIKE_PARAMETERS = frozenset({"destination", "save_as"})
+
+
+#: Flags for every model-supplied `$ref` regex, wherever one is compiled.
+#:
+#: A live run failed by exactly one letter: the planner wrote `revenue: ([0-9.]+)`
+#: and the PDF says `Revenue:`. Note what that plan got RIGHT — it targeted Revenue
+#: rather than the `Operating Profit` line planted beside it, and it used a proper
+#: capture group. Only the capitalisation of a label was wrong, and capitalisation
+#: is a detail no planner can reliably reproduce from a spoken request.
+#:
+#: This is the same leniency already granted to sheet names, which resolve exactly
+#: first and then case- and whitespace-insensitively, so the two now agree instead
+#: of one being arbitrarily stricter than the other.
+#:
+#: It is a MATCHING leniency and not a value transformation. What the pattern finds
+#: is returned exactly as it appears in the document, with its own casing intact;
+#: nothing is rewritten, only found.
+REFERENCE_REGEX_FLAGS = re.IGNORECASE
+
+
+def compile_reference_regex(pattern: str) -> re.Pattern[str]:
+    """Compile a `$ref` regex the one way the whole system compiles them.
+
+    THE POINT OF THIS FUNCTION IS THAT THERE IS ONLY ONE OF IT. Plan-time
+    validation and execution-time matching must agree about the flags, because a
+    plan-time check that compiled differently from the executor would pass a plan
+    the executor then refuses — the same ordering bug that produced an unexplained
+    422 earlier in this project's history.
+
+    Raises `re.error` for a pattern that does not compile, which both callers
+    already handle: the plan-time check turns it into a repair message, the
+    executor into a failed action.
+    """
+    return re.compile(pattern, REFERENCE_REGEX_FLAGS)
 
 
 def _structured_type(action_type: str) -> StructuredActionType | None:
