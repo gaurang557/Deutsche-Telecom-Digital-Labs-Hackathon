@@ -17,3 +17,9 @@ openpyxl>=3.1
 # structured .docx API used by `executors/document_ops.py` (see ARCHITECTURE
 # §3/§9). NOTE: the pip package is `python-docx`; the import name is `docx`.
 python-docx>=1.1
+
+# Milestone 7 — presentation (PowerPoint) executor. python-pptx (imported as
+# `pptx`) is the structured .pptx API used by `executors/presentation_ops.py`
+# (see ARCHITECTURE §3/§9). NOTE: the pip package is `python-pptx`; the import
+# name is `pptx`.
+python-pptx>=1.0
