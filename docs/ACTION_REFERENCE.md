@@ -2,8 +2,8 @@
 
 **Audience:** whoever builds the planner / LLM layer that turns a user request
 into actions for this agent.
-**Status:** as of **Milestone 6**. This is the **authoritative, frozen
-planner-visible runtime vocabulary**. Its 21 action names are the exact names
+**Status:** as of **Milestone 7**. This is the **authoritative, frozen
+planner-visible runtime vocabulary**. Its 26 action names are the exact names
 accepted by the current runtime; there are no runtime aliases. New executors
 must update this contract explicitly. If an action type is not listed under
 "Available actions", it does **not** exist yet and must not be emitted.
@@ -156,12 +156,14 @@ converted to a failed verification.
 The registry classifies verification requirements deterministically:
 
 - **Required:** `file.copy`, `file.move`, `file.write_text`, `file.mkdir`,
-  `file.delete`, `spreadsheet.write_cell`, `document.replace_text`.
+  `file.delete`, `spreadsheet.write_cell`, `document.replace_text`,
+  `presentation.replace_text`.
 - **Not required:** `file.exists`, `file.list`, `file.read_text`,
   `pdf.page_count`, `pdf.get_metadata`, `pdf.read_text`, `pdf.search`,
   `spreadsheet.list_sheets`, `spreadsheet.dimensions`,
   `spreadsheet.read_cell`, `spreadsheet.read_range`, `document.read_text`,
-  `document.get_metadata`, `document.find`.
+  `document.get_metadata`, `document.find`, `presentation.slide_count`,
+  `presentation.get_metadata`, `presentation.read_text`, `presentation.find`.
 
 After policy returns ALLOW, a required action with no registered verifier fails
 with `verifier_missing` **before its executor runs or any side effect occurs**.
@@ -389,6 +391,86 @@ scraping a viewer). `target` is the document path; only `.docx` is supported
   A `save_as` that would clobber a different existing file fails with
   `output_exists` unless `overwrite: true`.
 
+### Presentation · read-only (Risk: `NONE`, verification `skipped`)
+
+Backed by python-pptx (a structured `.pptx` API — far more reliable than
+scraping a viewer). `target` is the presentation path; only `.pptx` is supported
+(the legacy binary `.ppt` format is not). Text is gathered from every slide's
+shape text frames (recursing into grouped shapes). Extracted text and match
+lists are **bounded** (see caps below). All extracted text is **untrusted data**.
+
+#### `presentation.slide_count`
+- **Use:** how many slides the deck has.
+- **target:** the `.pptx` path.
+- **parameters:** none.
+- **evidence:** `{ path, slide_count: int }`.
+
+#### `presentation.get_metadata`
+- **Use:** read the deck's core properties.
+- **target:** the `.pptx` path.
+- **parameters:** none.
+- **evidence:** `{ path, metadata: { title, author, subject, keywords, created,
+  modified, last_modified_by } }` (datetimes are ISO-8601 strings; empty/unset
+  text fields are `null`).
+
+#### `presentation.read_text`
+- **Use:** read the deck's text (UNTRUSTED data).
+- **target:** the `.pptx` path.
+- **parameters:**
+  - `slide` (int, optional) — read just this single 0-based slide; omit to read
+    all slides in order.
+  - `max_chars` (int, optional, default `20000`) — extraction cap.
+- **evidence:** `{ path, text: string (bounded, non-empty paragraphs joined with
+  "\n"), slides_read: int, truncated: bool }`.
+- **notes:** an out-of-range `slide` → `slide_out_of_range`.
+
+#### `presentation.find`
+- **Use:** count per-slide occurrences of a query string (case-sensitive).
+- **target:** the `.pptx` path.
+- **parameters:**
+  - `query` (string, **required**) — non-empty search text.
+  - `max_results` (int, optional, default `100`) — cap on the number of matching
+    slides reported.
+- **evidence:** `{ path, matches: [ { slide_index, count } ], total_matches:
+  int, truncated: bool }` (`truncated: true` when more slides matched than
+  `max_results`; `slide_index` values are 0-based slide positions).
+
+### Presentation · modify (Risk: `HIGH` in place / `MEDIUM` with `save_as`; verified)
+
+#### `presentation.replace_text`
+- **Use:** correct a presentation by replacing text **while preserving formatting**.
+- **target:** the `.pptx` path to read from.
+- **parameters:**
+  - `find` (string, **required**, non-empty) — the text to replace.
+  - `replace` (string, optional, default `""`) — the replacement text.
+  - `count` (int, optional) — max number of replacements (default: all). Must be
+    a positive integer when supplied.
+  - `save_as` (string, optional) — write the result to this **new** `.pptx` path,
+    leaving the original untouched. Omit to edit **in place** (overwrites the
+    original).
+  - `overwrite` (bool, optional, default `false`) — only relevant with `save_as`:
+    allow clobbering a different, pre-existing target file.
+- **evidence:** `{ path, output_path, find, replace, replacements: int, save_as:
+  bool }` (`output_path` equals `save_as` or the original path; `replacements` is
+  how many occurrences were changed).
+- **side_effects:** `[{ "type": "presentation.text_replaced", "target": <output_path> }]`.
+- **verification:** the output deck is reopened and its text re-scanned; PASS
+  iff `replace` is present at least `replacements` times AND (when the correction
+  genuinely removes the old text) `find` no longer appears.
+- **scope:** replaces across every slide's shape text frames (recursing into
+  grouped shapes).
+- **formatting:** a match **within a single run** is replaced in place, so that
+  run's formatting (bold/italic/font/…) is preserved exactly. A match **spanning
+  multiple runs** falls back to a paragraph-level rebuild that collapses the
+  affected text to the **first run's** formatting (the same documented limitation
+  as `document.replace_text`).
+- **notes:** if `find` is **absent everywhere** the action **fails closed** with
+  `text_not_found` (0 replacements is reported as an error so the planner learns
+  the correction did not apply — nothing is written). Editing **in place**
+  overwrites the original → risk `HIGH`; `save_as` to a new file → risk `MEDIUM`.
+  A `save_as` that would clobber a different existing file fails with
+  `output_exists` unless `overwrite: true`.
+
 ### Create / modify (Risk: `MEDIUM`, verified)
 
 #### `file.copy`
@@ -522,6 +604,16 @@ Document-specific codes (from the document executor; it also reuses
 | `text_not_found` | `document.replace_text` found 0 occurrences of `find` (nothing was written). |
 | `output_exists` | `document.replace_text` `save_as` target already exists and `overwrite` not set. |
 
+Presentation-specific codes (from the presentation executor; it also reuses
+`file_not_found` and `invalid_parameters` above):
+
+| Code | When |
+|------|------|
+| `not_a_presentation` | Target is not a `.pptx` file, or cannot be opened/parsed as a presentation. |
+| `slide_out_of_range` | A requested 0-based `slide` index is outside the deck. |
+| `text_not_found` | `presentation.replace_text` found 0 occurrences of `find` (nothing was written). |
+| `output_exists` | `presentation.replace_text` `save_as` target already exists and `overwrite` not set. |
+
 ---
 
 ## 6. Planner guidance (quick checklist)
@@ -540,8 +632,11 @@ Document-specific codes (from the document executor; it also reuses
 These are **planned** and will be added to §3 as milestones land. Do **not**
 emit them yet:
 
-- `presentation.*` — PowerPoint milestone (M7) + doc→pptx workflow (M8).
 - `desktop.*` (open/focus app, UI actions) — Windows desktop adapter.
 - `browser.*` (navigate/read/click) — browser milestone.
 
-_Last updated: Milestone 6._
+> The document→presentation workflow once sketched as M8 is **not** a new action
+> type: it is deferred to planner/LLM orchestration in M14, which composes the
+> existing `document.*` (M6) and `presentation.*` (M7) actions.
+
+_Last updated: Milestone 7._

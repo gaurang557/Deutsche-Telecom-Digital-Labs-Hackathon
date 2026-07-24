@@ -86,7 +86,7 @@ decision. See the guards in `execution/dispatcher.py`.
 | M4 | spreadsheet executor (`executors/spreadsheet_ops.py`) + write verifier (`verification/spreadsheet_verifiers.py`) | ✅ |
 | M5 | first deterministic multi-app workflow (PDF→spreadsheet) | deferred to planner integration / M14 |
 | M6 | docx executor (`executors/document_ops.py`) + replace_text verifier (`verification/document_verifiers.py`) | ✅ |
-| M7 | presentation executor | planned |
+| M7 | pptx presentation executor (`executors/presentation_ops.py`) + replace_text verifier (`verification/presentation_verifiers.py`) | ✅ |
 | M8 | document→presentation orchestration | deferred to planner/LLM integration / M14; not a hardcoded execution workflow |
 | M9 | Windows desktop adapter (UI Automation) | planned |
 | M10 | browser executor (Playwright) | planned |
@@ -113,8 +113,12 @@ milestones: `test_contracts.py`, `test_dispatcher.py` (M0); `test_registry.py`,
 `test_audit_query.py` (native audit-log reader);
 `test_pdf_ops.py` (M3 — read-only `pdf.*` executor, unit + end-to-end);
 `test_spreadsheet_ops.py` (M4 — `spreadsheet.*` executor + write verifier, unit + end-to-end);
-`test_document_ops.py` (M6 — `document.*` executor + replace_text verifier, unit + end-to-end).
-Current suite: **149 passed**.
+`test_document_ops.py` (M6 — `document.*` executor + replace_text verifier, unit + end-to-end);
+`test_presentation_ops.py` (M7 — `presentation.*` executor + replace_text verifier, unit + end-to-end).
+Manual testers live in `tools/manual_<domain>_test.py` (e.g.
+`tools/manual_presentation_test.py` for M7), each driving the full pipeline
+against a gitignored `sandbox/`.
+Current suite: **186 passed**.
 
 ## 7. Related docs
 

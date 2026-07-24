@@ -32,7 +32,7 @@ and testing are not scheduled.
 | M4 | `spreadsheet.*` executor + `write_cell` verifier | ✅ done |
 | M5 | Deterministic multi-app orchestration workflow | deferred to planner integration / M14 |
 | M6 | `document.*` executor + `replace_text` verifier | ✅ done |
-| M7 | Presentation executor | planned |
+| M7 | `presentation.*` executor + `replace_text` verifier | ✅ done |
 | M8 | Document→presentation orchestration | deferred to planner/LLM integration / M14; not hardcoded |
 | M9 | Windows UI Automation adapter | planned |
 | M10 | Browser executor | planned |
@@ -45,9 +45,9 @@ and testing are not scheduled.
 | M17 | Cross-platform/macOS readiness | removed from active roadmap |
 | M18 | Release/demo freeze | planned |
 
-M0–M4 and M6 code exist today. Desktop, browser, planner/LLM, voice, full state
-orchestration, and shared-audit integration remain planned or externally owned
-as shown above.
+M0–M4, M6, and M7 code exist today. Desktop, browser, planner/LLM, voice, full
+state orchestration, and shared-audit integration remain planned or externally
+owned as shown above.
 
 ---
 
@@ -55,8 +55,8 @@ as shown above.
 
 - Python 3.11+
 - Dependencies currently cover the core plus implemented structured-file
-  executors: `pydantic`, `pytest`, `pytest-asyncio`, PyMuPDF, openpyxl, and
-  python-docx (see `requirements.txt` for version floors).
+  executors: `pydantic`, `pytest`, `pytest-asyncio`, PyMuPDF, openpyxl,
+  python-docx, and python-pptx (see `requirements.txt` for version floors).
 
 Heavier dependencies (PyMuPDF, openpyxl, python-docx, python-pptx, Playwright,
 pywinauto, faster-whisper, etc.) are added by the milestone that needs them, so

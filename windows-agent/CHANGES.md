@@ -5,6 +5,102 @@ single milestone commit contains, so it can double as the commit body.
 
 ---
 
+## Milestone 7 — Presentation (PowerPoint) Executor + replace_text verifier
+
+**Summary:** Added the `.pptx` presentation capability — four read-only
+`presentation.*` actions plus the headline **`presentation.replace_text`**, which
+corrects a deck **while preserving its formatting** (mirroring the M6
+`document.replace_text` requirement). All backed by **python-pptx** (a structured
+`.pptx` API, chosen over GUI scraping for reliability — see ARCHITECTURE §3/§9;
+the pip package is `python-pptx`, the import is `pptx`). Blocking python-pptx
+load/save runs off the event loop via `asyncio.to_thread`, mirroring
+`file_ops`/`pdf_ops`/`spreadsheet_ops`/`document_ops`. The read actions are
+`RiskLevel.NONE` (no side effects) so verification is **SKIPPED**; `replace_text`
+is the verified one — an independent verifier reopens the OUTPUT deck and
+re-scans its text (the replacement is present at least the expected number of
+times, and the old text is gone when the correction removes it). Only `.pptx` is
+supported (the legacy binary `.ppt` format is not).
+
+**Formatting-preservation approach + limitation:** a `.pptx` paragraph (inside a
+shape's text frame) is a sequence of *runs*, each with its own formatting. A
+match **within a single run** is replaced in place, so that run's formatting
+(bold/italic/font/…) is preserved exactly (the common case, asserted in tests). A
+match **spanning multiple runs** falls back to a paragraph-level rebuild that
+writes the result into the first run and clears the rest — **collapsing that span
+to the first run's formatting** (the same accepted, documented limitation as
+`document.replace_text`; a faithful cross-run edit would require run
+splitting/merging at XML level). Text is gathered from every slide's shape text
+frames, recursing into grouped shapes.
+
+**Added**
+- `executors/presentation_ops.py` — `PresentationExecutor` handling
+  `presentation.slide_count` (`{path, slide_count}`), `presentation.get_metadata`
+  (`core_properties` title/author/subject/keywords/created/modified/
+  last_modified_by; datetimes → ISO strings, empty strings → null),
+  `presentation.read_text` (non-empty paragraphs joined with "\n", bounded to
+  `_DEFAULT_TEXT_CHAR_CAP` = 20 000 chars, `max_chars` override, optional 0-based
+  `slide` single-slide selector, `slides_read`/`truncated` flags),
+  `presentation.find` (per-slide case-sensitive substring counts, bounded to
+  `_DEFAULT_SEARCH_RESULTS` = 100 matching slides), and
+  `presentation.replace_text`. `replace_text` replaces across **every slide's
+  shape text frames (recursing into groups)**, honours an optional positive
+  `count` limit, **fails closed with `text_not_found`** when `find` is absent
+  (0 replacements reported as an error, nothing written), and writes to a NEW
+  file via `save_as` (original untouched) or edits **in place** otherwise; a
+  `save_as` that would clobber a different existing file fails with
+  `output_exists` unless `overwrite=true`. Structured `_err` returns;
+  `_normalize_meta`; `PRESENTATION_ACTION_TYPES` /
+  `PRESENTATION_ACTION_REQUIREMENTS`; `register_presentation_executor`. Fails
+  closed on missing file, non-`.pptx`/unparseable input, empty `find`, and an
+  out-of-range `slide`.
+- `verification/presentation_verifiers.py` — `PresentationReplaceTextVerifier`:
+  independently reopens `output_path` from evidence and re-scans the same places
+  the executor edits; PASS iff `replace` occurs ≥ `replacements` times AND (when
+  `find != replace` and `find` is not a substring of `replace`) `find` is gone.
+  `PRESENTATION_VERIFIERS`; `register_presentation_verifiers`.
+- `tests/test_presentation_ops.py` — 27 tests (read units incl. text
+  bounding/truncation, single-slide selector + out-of-range, metadata round-trip,
+  per-slide find + empty-query error; replace_text single-run **formatting
+  preservation**, multi-occurrence across slides, `count` limit, `text_not_found`,
+  empty `find`, `save_as` leaves original untouched, in-place edit, `save_as`
+  clobber guard, cross-run fallback; verifier PASS + two FAIL cases; error paths;
+  and end-to-end Dispatcher tests: a verified `replace_text` PASSED, a read
+  SKIPPED, the `verifier_missing` fail-closed guard, plus registration-metadata
+  checks). `.pptx` fixtures are built on the fly with python-pptx (no committed
+  binaries).
+- `tools/manual_presentation_test.py` — interactive CLI exercising
+  `presentation.*` through the full pipeline against a gitignored `sandbox/`, with
+  a `sample` generator (two slides incl. bold text + core properties) plus
+  `slides`/`read`/`meta`/`find`/`replace` (in place) / `replaceas` (`save_as`) /
+  `ls` commands.
+
+**Changed**
+- `executors/__init__.py`, `verification/__init__.py` — export the new executor,
+  verifier, `PRESENTATION_ACTION_TYPES`/`PRESENTATION_VERIFIERS`, and register
+  helpers; docstrings mention the new modules.
+- `requirements.txt` — add `python-pptx` (imported as `pptx`).
+- `docs/ACTION_REFERENCE.md` — new `presentation.*` sections (read-only params/
+  evidence; `replace_text` params/evidence/verification/scope/formatting notes),
+  presentation-specific error codes, the frozen catalogue count **21 → 26**, the
+  verification-requirement lists, and roadmap/status updated to M7.
+- `docs/ARCHITECTURE.md` — §3 marks PPTX read+`replace_text` Implemented (M7) via
+  python-pptx (`PresentationExecutor`); §5 marks `presentation.replace_text`
+  verification Implemented (M7) via `PresentationReplaceTextVerifier` and lists
+  the read-only `presentation.*` actions as SKIPPED; legend now "through
+  Milestone 7".
+- `docs/WALKTHROUGH.md` — milestone map marks M7 ✅ (naming `presentation_ops.py`
+  + `presentation_verifiers.py`); `test_presentation_ops.py` added; suite count
+  updated.
+
+**Risk notes:** presentation reads = `NONE`; `presentation.replace_text` = `HIGH`
+when it edits **in place** (overwrites the original), `MEDIUM` when `save_as`
+writes a new file. (Risk is documentation/policy here; the executor never sets
+it — the real policy lands in M12.)
+
+**Tests:** `pytest -q` → **186 passed** (159 baseline + 27 new).
+
+---
+
 ## Roadmap and ownership documentation reconciliation
 
 **Summary:** Deferred M8 document→presentation orchestration to M14 planner/LLM

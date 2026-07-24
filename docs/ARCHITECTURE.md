@@ -5,7 +5,7 @@ each decision. It addresses every topic required by the deliverable. Where a
 capability is not yet implemented, it is marked **[Planned]** and the design is
 described so the intent is clear and reviewable.
 
-Legend: **[Implemented]** = code exists today (through Milestone 6). **[Planned]** =
+Legend: **[Implemented]** = code exists today (through Milestone 7). **[Planned]** =
 designed, lands in a later milestone.
 
 ---
@@ -110,10 +110,10 @@ Executor preference order (most reliable first):
 1. **Structured file/application APIs** — PyMuPDF (PDF) **[Implemented — M3, read
    only]**, openpyxl (XLSX) **[Implemented — M4, read + write_cell]**, python-docx
    (DOCX) **[Implemented — M6, read + replace_text]**, python-pptx (PPTX)
-   **[Planned — M7]**. The former M8 document→presentation workflow is deferred
-   to planner/LLM integration in M14: the planner composes M6 and M7 actions
-   rather than a hardcoded execution workflow. Reading (or writing) a cell — or
-   a PDF page — via a library is far
+   **[Implemented — M7, read + replace_text]**. The former M8 document→presentation
+   workflow is deferred to planner/LLM integration in M14: the planner composes M6
+   and M7 actions rather than a hardcoded execution workflow. Reading (or writing)
+   a cell — or a PDF page — via a library is far
    more reliable than scraping a GUI. The read-only `pdf.*` actions
    (`pdf.page_count`, `pdf.get_metadata`, `pdf.read_text`, `pdf.search`) live in
    `executors/pdf_ops.py`. The `spreadsheet.*` actions (`list_sheets`,
@@ -123,8 +123,14 @@ Executor preference order (most reliable first):
    `document.*` actions (`read_text`, `get_metadata`, `find` read-only;
    `replace_text` modifying) live in `executors/document_ops.py`; `replace_text`
    edits at the **run level** to preserve formatting (a cross-run match falls back
-   to the first run's formatting — documented limitation). Extracted text/values
-   are bounded and treated as untrusted data.
+   to the first run's formatting — documented limitation). The `presentation.*`
+   actions (`slide_count`, `get_metadata`, `read_text`, `find` read-only;
+   `replace_text` modifying) live in `executors/presentation_ops.py`
+   (`PresentationExecutor`); `replace_text` uses the same run-level
+   formatting-preserving strategy as `document.*` (with the same cross-run
+   fallback to the first run's formatting), scans every slide's shape text frames
+   (recursing into grouped shapes), and only `.pptx` is supported. Extracted
+   text/values are bounded and treated as untrusted data.
 2. **Accessibility / semantic UI automation** — Windows UI Automation via
    `pywinauto` (roles, names, control patterns).
 3. **Keyboard shortcuts**.
@@ -147,7 +153,7 @@ text are always **untrusted data**.
   is **revalidated against the real environment before important actions** — a
   window may have closed or focus changed.
 
-## 5. Action verification  **[Implemented — M2 for file.*, M4 for spreadsheet.write_cell, M6 for document.replace_text; more executors later]**
+## 5. Action verification  **[Implemented — M2 for file.*, M4 for spreadsheet.write_cell, M6 for document.replace_text, M7 for presentation.replace_text; more executors later]**
 
 - **A function returning without an exception is NOT proof of success.** Every
   modifying action must independently **re-observe state**. Implemented today
@@ -159,13 +165,16 @@ text are always **untrusted data**.
   - `file.delete` → the path is gone. [Implemented]
   - `spreadsheet.write_cell` → reload the workbook and re-read the cell; expected == observed (numbers compared numerically). [Implemented — M4]
   - `document.replace_text` → reopen the output document and re-scan its text; the replacement is present at least the expected number of times and (when the correction removes it) the original text is gone. [Implemented — M6]
+  - `presentation.replace_text` → reopen the output deck and re-scan its text (`PresentationReplaceTextVerifier` in `verification/presentation_verifiers.py`); the replacement is present at least the expected number of times and (when the correction removes it) the original text is gone. [Implemented — M7]
 - **Read-only actions need no verifier.** The `pdf.*` actions added in M3
   (`executors/pdf_ops.py`), the read-only `spreadsheet.*` actions added in M4
-  (`spreadsheet.list_sheets`/`dimensions`/`read_cell`/`read_range`), and the
+  (`spreadsheet.list_sheets`/`dimensions`/`read_cell`/`read_range`), the
   read-only `document.*` actions added in M6
-  (`document.read_text`/`get_metadata`/`find`) are `RiskLevel.NONE` (no side
-  effects), so no verifier is registered and the VerificationRegistry correctly
-  returns `SKIPPED` — the same treatment as
+  (`document.read_text`/`get_metadata`/`find`), and the read-only
+  `presentation.*` actions added in M7
+  (`presentation.slide_count`/`get_metadata`/`read_text`/`find`) are
+  `RiskLevel.NONE` (no side effects), so no verifier is registered and the
+  VerificationRegistry correctly returns `SKIPPED` — the same treatment as
   `file.exists`/`file.list`/`file.read_text`.
 - Verification requirements are deterministic action-registration metadata,
   not planner input and not inferred from risk. A required verifier must be
