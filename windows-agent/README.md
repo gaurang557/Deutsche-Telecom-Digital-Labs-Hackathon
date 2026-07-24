@@ -93,7 +93,6 @@ tests/
   test_contracts.py     # schema validation (incl. forbidden-field rejection)
   test_dispatcher.py    # dispatch success/failure + unknown-action safety + evidence bounding
 docs/
-  ARCHITECTURE.md       # the architecture description deliverable
   WALKTHROUGH.md        # guided tour: how the files fit together + reading order
   QUIZ_NOTES.md         # study notes / anticipated Q&A
 CHANGES.md              # per-milestone / per-commit changelog
@@ -103,8 +102,9 @@ pytest.ini
 
 > **Documentation convention:** detailed "what it does and why" explanations
 > live in each source file's module docstring and inline comments. This README
-> and `docs/ARCHITECTURE.md` are intentionally high-level intros — open the file
-> itself for the specifics.
+> and `../docs/ARCHITECTURE.md` are intentionally high-level intros — open the file
+> itself for the specifics. The team-shared deliverables — `../docs/ARCHITECTURE.md`
+> and `../docs/ACTION_REFERENCE.md` — live in the repo-root `docs/`.
 
 ## How the execution path works (today)
 
@@ -120,5 +120,5 @@ Action (Pydantic-validated)
 Reserved (added in later milestones, in this exact spot):
 `validate → [policy authorize] → [confirmation] → execute → [verification] → [audit]`.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and the
+See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for the full design and the
 reasoning behind each decision.
