@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.execution.gmail import capture_open_gmail_email, summarize_email
 from app.schemas import (
     Action,
     ActionPlan,
@@ -35,6 +36,13 @@ _WINDOWS_APPLICATIONS = {
 _MACOS_APPLICATIONS = {
     "notepad": "TextEdit",
     "text editor": "TextEdit",
+}
+_MACOS_PROTECTED_APPLICATIONS = {
+    "Codex",
+    "Finder",
+    "iTerm2",
+    "Terminal",
+    "Visual Studio Code",
 }
 
 
@@ -117,14 +125,18 @@ class DesktopExecutor:
             ActionType.OPEN_FILE: self._open_file,
             ActionType.OPEN_URL: self._open_url,
             ActionType.FOCUS_APPLICATION: self._focus_application,
+            ActionType.CLOSE_APPLICATION: self._close_application,
+            ActionType.CLOSE_ALL_APPLICATIONS: self._close_all_applications,
             ActionType.CLICK_ELEMENT: self._click_element,
             ActionType.TYPE_TEXT: self._type_text,
             ActionType.PRESS_KEY: self._press_key,
             ActionType.READ_FILE: self._read_file,
+            ActionType.COPY_FILE_CONTENT: self._copy_file_content,
             ActionType.CREATE_FILE: self._create_file,
             ActionType.MOVE_FILE: self._move_file,
             ActionType.OVERWRITE_FILE: self._overwrite_file,
             ActionType.DELETE_FILE: self._delete_file,
+            ActionType.SUMMARIZE_GMAIL_EMAIL: self._summarize_gmail_email,
         }
         handler = handlers.get(action.type)
         if handler is None:
@@ -276,6 +288,73 @@ class DesktopExecutor:
         return {"application": action.target, "focused": True}
 
     @staticmethod
+    def _close_application(action: Action) -> dict[str, Any]:
+        if platform.system() != "Darwin":
+            raise RuntimeError("close_application is currently supported on macOS")
+        application = _MACOS_APPLICATIONS.get(
+            action.target.casefold(),
+            action.target,
+        )
+        safe_name = application.replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{safe_name}" to quit'],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {"application": application, "closed": True}
+
+    @staticmethod
+    def _close_all_applications(action: Action) -> dict[str, Any]:
+        if platform.system() != "Darwin":
+            raise RuntimeError(
+                "close_all_applications is currently supported on macOS"
+            )
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                (
+                    'tell application "System Events" to get name of every '
+                    "application process whose background only is false"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        applications = [
+            name.strip()
+            for name in result.stdout.strip().split(",")
+            if name.strip()
+        ]
+        closed: list[str] = []
+        protected: list[str] = []
+        for application in applications:
+            if application in _MACOS_PROTECTED_APPLICATIONS:
+                protected.append(application)
+                continue
+            safe_name = application.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.Popen(
+                [
+                    "osascript",
+                    "-e",
+                    (
+                        "ignoring application responses\n"
+                        f'tell application "{safe_name}" to quit\n'
+                        "end ignoring"
+                    ),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            closed.append(application)
+        return {
+            "closed_applications": closed,
+            "protected_host_applications": protected,
+        }
+
+    @staticmethod
     def _click_element(action: Action) -> dict[str, Any]:
         import pyautogui
 
@@ -312,7 +391,35 @@ class DesktopExecutor:
     def _read_file(action: Action) -> dict[str, Any]:
         path = Path(action.target).expanduser()
         content = path.read_text(encoding="utf-8")
-        return {"path": str(path), "content": content, "size": len(content)}
+        return {
+            "path": str(path),
+            "content": content[:50_000],
+            "size": len(content),
+            "truncated": len(content) > 50_000,
+        }
+
+    @staticmethod
+    def _copy_file_content(action: Action) -> dict[str, Any]:
+        source = Path(action.target).expanduser()
+        destination_value = action.parameters.get("destination")
+        if not isinstance(destination_value, str):
+            raise ValueError("copy_file_content requires a destination parameter")
+        destination = Path(destination_value).expanduser()
+        overwrite = action.parameters.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            raise ValueError("copy_file_content overwrite must be true or false")
+        if destination.exists() and not overwrite:
+            raise RuntimeError(
+                "The destination already exists; explicitly request overwrite"
+            )
+        content = source.read_text(encoding="utf-8")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding="utf-8")
+        return {
+            "source": str(source),
+            "destination": str(destination),
+            "characters_copied": len(content),
+        }
 
     @staticmethod
     def _create_file(action: Action) -> dict[str, Any]:
@@ -357,6 +464,18 @@ class DesktopExecutor:
             raise ValueError("delete_file target must be an existing file")
         send2trash(str(path))
         return {"path": str(path), "moved_to_trash": True}
+
+    @staticmethod
+    def _summarize_gmail_email(action: Action) -> dict[str, Any]:
+        if platform.system() != "Darwin":
+            raise RuntimeError(
+                "Gmail browser summarization is currently supported on macOS"
+            )
+        content = capture_open_gmail_email()
+        return {
+            "summary": summarize_email(content),
+            "source": "Active Gmail message in Google Chrome",
+        }
 
     @staticmethod
     def _unsupported(action: Action) -> ActionResult:

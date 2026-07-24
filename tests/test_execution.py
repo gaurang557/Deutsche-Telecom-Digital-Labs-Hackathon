@@ -154,3 +154,89 @@ def test_open_url_uses_requested_browser(monkeypatch) -> None:
     assert result.status == "succeeded"
     assert result.evidence["url"] == "https://bing.com"
     assert launched == [["open", "-a", "Google Chrome", "https://bing.com"]]
+
+
+def test_closes_specific_macos_application(monkeypatch) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr("app.execution.executor.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "app.execution.executor.subprocess.run",
+        lambda command, **_: launched.append(command),
+    )
+    action = make_action(
+        action_type=ActionType.CLOSE_APPLICATION,
+        target="Calculator",
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert result.evidence["closed"] is True
+    assert "Calculator" in launched[0][-1]
+
+
+def test_close_all_preserves_host_applications(monkeypatch) -> None:
+    closed: list[list[str]] = []
+    monkeypatch.setattr("app.execution.executor.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "app.execution.executor.subprocess.run",
+        lambda *_, **__: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="Finder, Terminal, Calculator, Preview",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.execution.executor.subprocess.Popen",
+        lambda command, **_: closed.append(command),
+    )
+    action = make_action(
+        action_type=ActionType.CLOSE_ALL_APPLICATIONS,
+        target="macOS",
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert result.evidence["closed_applications"] == ["Calculator", "Preview"]
+    assert result.evidence["protected_host_applications"] == ["Finder", "Terminal"]
+    assert len(closed) == 2
+
+
+def test_copies_text_content_to_new_file(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("Voice desk content")
+    action = make_action(
+        action_type=ActionType.COPY_FILE_CONTENT,
+        target=str(source),
+        parameters={"destination": str(destination), "overwrite": False},
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert destination.read_text() == "Voice desk content"
+
+
+def test_summarizes_active_gmail_message(monkeypatch) -> None:
+    monkeypatch.setattr("app.execution.executor.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "app.execution.executor.capture_open_gmail_email",
+        lambda: "Sender: Dev Team. Subject: Demo. Please reply by Friday.",
+    )
+    monkeypatch.setattr(
+        "app.execution.executor.summarize_email",
+        lambda _: "The Dev Team requests a reply by Friday.",
+    )
+    action = make_action(
+        action_type=ActionType.SUMMARIZE_GMAIL_EMAIL,
+        target="Google Chrome",
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert result.evidence["summary"] == (
+        "The Dev Team requests a reply by Friday."
+    )

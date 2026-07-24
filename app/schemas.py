@@ -28,10 +28,13 @@ class ActionType(StrEnum):
     OPEN_FILE = "open_file"
     OPEN_URL = "open_url"
     FOCUS_APPLICATION = "focus_application"
+    CLOSE_APPLICATION = "close_application"
+    CLOSE_ALL_APPLICATIONS = "close_all_applications"
     CLICK_ELEMENT = "click_element"
     TYPE_TEXT = "type_text"
     PRESS_KEY = "press_key"
     READ_FILE = "read_file"
+    COPY_FILE_CONTENT = "copy_file_content"
     CREATE_FILE = "create_file"
     MOVE_FILE = "move_file"
     OVERWRITE_FILE = "overwrite_file"
@@ -39,6 +42,7 @@ class ActionType(StrEnum):
     SEND_MESSAGE = "send_message"
     SUBMIT_FORM = "submit_form"
     PUBLISH_CONTENT = "publish_content"
+    SUMMARIZE_GMAIL_EMAIL = "summarize_gmail_email"
 
 
 class RiskLevel(StrEnum):

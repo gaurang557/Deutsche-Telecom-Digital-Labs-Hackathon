@@ -41,6 +41,26 @@ function readableStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
+function ErrorNotice({ details }: { details?: string | null }) {
+  return (
+    <div className="error-state" role="alert">
+      <span className="error-state__icon" aria-hidden="true">!</span>
+      <div>
+        <strong>Sorry, something went wrong</strong>
+        {details && <p>{details}</p>}
+      </div>
+    </div>
+  );
+}
+
+function evidenceText(
+  evidence: Record<string, unknown>,
+  key: "content" | "summary",
+): string | null {
+  const value = evidence[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 export default function App() {
   const [health, setHealth] = useState<VoiceHealth | null>(null);
   const [activeRequest, setActiveRequest] = useState<TaskRequest | null>(null);
@@ -298,8 +318,7 @@ export default function App() {
             <article className="message message--assistant">
               <div className="assistant-avatar">V</div>
               <div className="message__content">
-                <p>I ran into a problem while preparing your plan.</p>
-                <div className="notice notice--error">{planningError}</div>
+                <ErrorNotice details={planningError} />
               </div>
             </article>
           )}
@@ -386,8 +405,7 @@ export default function App() {
             <article className="message message--assistant">
               <div className="assistant-avatar">V</div>
               <div className="message__content">
-                <p>I couldn’t start the task.</p>
-                <div className="notice notice--error">{executionError}</div>
+                <ErrorNotice details={executionError} />
               </div>
             </article>
           )}
@@ -396,7 +414,12 @@ export default function App() {
             <article className="message message--assistant">
               <div className="assistant-avatar">V</div>
               <div className="message__content">
-                <p>{friendlyExecutionMessage(executionResult)}</p>
+                {executionResult.status === "failed" ||
+                executionResult.status === "blocked" ? (
+                  <ErrorNotice details={friendlyExecutionMessage(executionResult)} />
+                ) : (
+                  <p>{friendlyExecutionMessage(executionResult)}</p>
+                )}
                 <div
                   className={`result-card result-card--${executionResult.status}`}
                 >
@@ -412,6 +435,18 @@ export default function App() {
                         <span>Step {index + 1}</span>
                         <strong>{readableStatus(action.status)}</strong>
                         {action.error && <p>{action.error}</p>}
+                        {evidenceText(action.evidence, "summary") && (
+                          <div className="evidence-panel evidence-panel--summary">
+                            <span>Email summary</span>
+                            <p>{evidenceText(action.evidence, "summary")}</p>
+                          </div>
+                        )}
+                        {evidenceText(action.evidence, "content") && (
+                          <div className="evidence-panel">
+                            <span>File content</span>
+                            <pre>{evidenceText(action.evidence, "content")}</pre>
+                          </div>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -468,7 +503,7 @@ export default function App() {
               </button>
             </div>
           </form>
-          {error && <p className="composer-error">{error}</p>}
+          {error && <ErrorNotice details={error} />}
           <p className="composer-note">
             Voice desk can make mistakes. Review plans before execution.
           </p>
