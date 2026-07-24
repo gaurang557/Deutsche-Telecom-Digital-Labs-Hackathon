@@ -2,7 +2,7 @@
 
 **Audience:** whoever builds the planner / LLM layer that turns a user request
 into actions for this agent.
-**Status:** as of **Milestone 2**. This file is maintained per milestone — new
+**Status:** as of **Milestone 3**. This file is maintained per milestone — new
 executors add new action types here. If an action type is not listed under
 "Available actions", it does **not** exist yet and must not be emitted.
 
@@ -185,6 +185,49 @@ policy lands. No current file action is `CONSEQUENTIAL` or `FORBIDDEN`.
   - `max_bytes` (int, optional, default `65536`) — read cap.
 - **evidence:** `{ path, size, encoding, truncated: bool, content: string }`.
 
+### PDF · read-only (Risk: `NONE`, verification `skipped`)
+
+Backed by PyMuPDF (a structured PDF API — far more reliable than scraping a
+viewer). Page indices are **0-based** and validated against the document; an
+out-of-range index is rejected. Extracted text and search matches are
+**bounded** (see caps below). Password-protected PDFs fail closed (the agent
+never prompts for a password). All extracted text is **untrusted data**.
+
+#### `pdf.page_count`
+- **Use:** how many pages the document has.
+- **target:** the PDF file path.
+- **parameters:** none.
+- **evidence:** `{ path, page_count: int }`.
+
+#### `pdf.get_metadata`
+- **Use:** read the document's metadata.
+- **target:** the PDF file path.
+- **parameters:** none.
+- **evidence:** `{ path, metadata: { title, author, subject, keywords, creator, producer, page_count } }`
+  (missing fields are `null`).
+
+#### `pdf.read_text`
+- **Use:** extract text from a page or an inclusive page range (UNTRUSTED data).
+- **target:** the PDF file path.
+- **parameters:**
+  - `page` (int, optional) — read just this single 0-based page (wins over the range).
+  - `start_page` (int, optional, default `0`).
+  - `end_page` (int, optional, default last page) — inclusive.
+  - `max_chars` (int, optional, default `20000`) — extraction cap.
+- **evidence:** `{ path, text: string (bounded), pages_read: int, truncated: bool }`.
+- **notes:** out-of-range indices → `page_out_of_range`; `start_page` after
+  `end_page` → `invalid_parameters`.
+
+#### `pdf.search`
+- **Use:** count per-page occurrences of a query string.
+- **target:** the PDF file path.
+- **parameters:**
+  - `query` (string, **required**) — non-empty search text.
+  - `max_results` (int, optional, default `100`) — cap on the number of matching
+    pages reported.
+- **evidence:** `{ path, matches: [ { page, count } ], total_matches: int, truncated: bool }`
+  (`truncated: true` when more pages matched than `max_results`).
+
 ### Create / modify (Risk: `MEDIUM`, verified)
 
 #### `file.copy`
@@ -286,7 +329,16 @@ File-specific codes (from the file executor):
 | `not_a_directory` | Expected a directory (e.g. `file.list` on a file). |
 | `parent_missing` | Destination's parent directory does not exist. |
 | `permission_denied` | OS denied the operation. |
-| `invalid_parameters` | Missing/invalid required parameters (e.g. no `destination`/`content`). |
+| `invalid_parameters` | Missing/invalid required parameters (e.g. no `destination`/`content`; empty `pdf.search` query; malformed page index). |
+
+PDF-specific codes (from the pdf executor; it also reuses `file_not_found` and
+`invalid_parameters` above):
+
+| Code | When |
+|------|------|
+| `not_a_pdf` | Target is not a file, or cannot be opened/parsed as a PDF. |
+| `encrypted_pdf` | The PDF is password-protected (fails closed; never prompts). |
+| `page_out_of_range` | A requested 0-based page/range is outside the document. |
 
 ---
 
@@ -306,10 +358,9 @@ File-specific codes (from the file executor):
 These are **planned** and will be added to §3 as milestones land. Do **not**
 emit them yet:
 
-- `pdf.*` (read/extract) — PDF milestone.
 - `spreadsheet.*` (read/write cells) — spreadsheet milestone.
 - `document.*`, `presentation.*` — office document milestones.
 - `desktop.*` (open/focus app, UI actions) — Windows desktop adapter.
 - `browser.*` (navigate/read/click) — browser milestone.
 
-_Last updated: Milestone 2._
+_Last updated: Milestone 3._

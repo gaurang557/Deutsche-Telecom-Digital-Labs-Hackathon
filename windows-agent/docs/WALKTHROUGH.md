@@ -16,7 +16,7 @@ walkthrough points you there rather than duplicating it.
 > enforced structurally, not by convention.**
 
 Keep this in mind while reading; almost every design choice serves it. Full
-reasoning: `docs/ARCHITECTURE.md` §0 and `docs/QUIZ_NOTES.md`.
+reasoning: `../docs/ARCHITECTURE.md` §0 and `docs/QUIZ_NOTES.md`.
 
 ## 2. Suggested reading order
 
@@ -82,7 +82,7 @@ decision. See the guards in `execution/dispatcher.py`.
 | M0 | contracts, `BaseExecutor`, registry, dispatcher, mocks | ✅ |
 | M1 | policy gateway (mock), verification registry, audit sink, execution context, full pipeline | ✅ |
 | M2 | `file.*` executor (`executors/file_ops.py`) + verifiers (`verification/file_verifiers.py`) + native audit-log reader (`audit/query.py`) | ✅ |
-| M3 | PDF executor | planned |
+| M3 | read-only PDF executor (`executors/pdf_ops.py`) | ✅ |
 | M4 | spreadsheet executor | planned |
 | M5 | first deterministic multi-app workflow (PDF→spreadsheet) | planned |
 | M6–M8 | docx / pptx executors + doc→pptx workflow | planned |
@@ -105,10 +105,13 @@ pytest -q
 milestones: `test_contracts.py`, `test_dispatcher.py` (M0); `test_registry.py`,
 `test_verification.py`, `test_pipeline.py`, `test_audit_events.py` (M1);
 `test_file_ops.py` (M2 — `file.*` executor + verifiers, unit + end-to-end);
-`test_audit_query.py` (native audit-log reader). Current suite: **85 passed**.
+`test_audit_query.py` (native audit-log reader);
+`test_pdf_ops.py` (M3 — read-only `pdf.*` executor, unit + end-to-end).
+Current suite: **104 passed**.
 
 ## 7. Related docs
 
-- `docs/ARCHITECTURE.md` — the full architecture description (all required topics).
+- `../docs/ARCHITECTURE.md` — the full architecture description (all required topics; repo-root shared docs).
+- `../docs/ACTION_REFERENCE.md` — LLM-facing action/response reference (repo-root shared docs).
 - `docs/QUIZ_NOTES.md` — anticipated review questions + answers.
 - `CHANGES.md` — per-milestone/per-commit changelog.
