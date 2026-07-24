@@ -92,8 +92,17 @@ def save_state(state: TaskState) -> None:
     table you can read with `sqlite3 foo.db` is exactly the kind of
     place it shouldn't sit in plaintext. Only its SHA-256 hash is
     stored, under pending_confirmation_hash.
+
+    If the caller already set state.pending_confirmation_hash, that's
+    trusted as-is. Otherwise, if there's a live pending_confirmation
+    token, the hash is derived from it here.
     """
-    pending_hash = _hash_token(state.pending_confirmation) if state.pending_confirmation else None
+    if state.pending_confirmation_hash is not None:
+        pending_hash = state.pending_confirmation_hash
+    elif state.pending_confirmation is not None:
+        pending_hash = _hash_token(state.pending_confirmation)
+    else:
+        pending_hash = None
 
     conn = _require_connection()
     with _lock:
@@ -127,12 +136,13 @@ def save_state(state: TaskState) -> None:
 def load_state(request_id: str) -> TaskState | None:
     """Return the saved TaskState for request_id, or None if there isn't one.
 
-    NOTE: the returned state's `pending_confirmation` is always None,
-    even if a confirmation was pending when it was saved. Only the hash
-    was persisted (see save_state), and a hash can't be turned back into
-    the token it came from -- that's the whole point of hashing it. Use
-    matches_pending() to check a candidate token against what's on
-    record; don't expect the plaintext token to come back from disk.
+    NOTE: the returned state's `pending_confirmation` (the plaintext
+    token) is always None, even if a confirmation was pending when it
+    was saved -- only the hash was ever persisted, and a hash can't be
+    turned back into the token it came from. `pending_confirmation_hash`
+    IS restored, though, which is what matches_pending() actually checks
+    against -- so a resumed state can still validate an incoming
+    confirmation correctly, it just never has the plaintext to leak.
     """
     conn = _require_connection()
     with _lock:
@@ -154,6 +164,7 @@ def load_state(request_id: str) -> TaskState | None:
         plan=Plan.model_validate_json(plan_json),
         history=_HISTORY_ADAPTER.validate_json(history_json),
         pending_confirmation=None,
+        pending_confirmation_hash=pending_confirmation_hash,
         updated_at=datetime.fromisoformat(updated_at),
     )
 
@@ -161,20 +172,20 @@ def load_state(request_id: str) -> TaskState | None:
 def matches_pending(state: TaskState, token: str) -> bool:
     """Check whether `token` is the confirmation `state` is waiting on.
 
-    Hashes both sides and compares with hmac.compare_digest (constant
-    time), so validating a confirmation can't be used as a timing oracle
-    to guess the token character by character.
+    Compares against state.pending_confirmation_hash, not
+    state.pending_confirmation -- so this works identically whether
+    `state` is live, in-memory, just-created, or was just reloaded from
+    disk via load_state (which restores the hash but never the
+    plaintext). hmac.compare_digest gives a constant-time comparison, so
+    validating a confirmation can't be used as a timing oracle to guess
+    the token character by character.
 
     Returns False when there's nothing pending -- there's nothing for
-    any token to match against. This also means: a state just loaded
-    from disk (whose pending_confirmation is always None -- see
-    load_state) will never match here, since it no longer knows what
-    token it was waiting for. Only useful against a live, in-memory
-    state that still holds the real token.
+    any token to match against.
     """
-    if state.pending_confirmation is None:
+    if state.pending_confirmation_hash is None:
         return False
-    return hmac.compare_digest(_hash_token(token), _hash_token(state.pending_confirmation))
+    return hmac.compare_digest(_hash_token(token), state.pending_confirmation_hash)
 
 
 def append_audit_event(event: AuditEvent) -> None:

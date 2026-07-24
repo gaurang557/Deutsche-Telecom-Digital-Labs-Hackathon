@@ -189,6 +189,12 @@ class TaskState(BaseModel):
     # agent redoing completed work after the user changes their mind mid-task.
     history: list[HistoryEntry]
     pending_confirmation: str | None = None  # token awaiting a yes/no
+    # sha256(pending_confirmation).hexdigest(), set alongside it. The state
+    # store persists only this, never the plaintext token -- see agent/store.py.
+    # Checking a resumed confirmation must go through this field (via
+    # store.matches_pending), because pending_confirmation itself does not
+    # survive a save/load round trip.
+    pending_confirmation_hash: str | None = None
     updated_at: datetime
 
     def attempts_for(self, action_id: str) -> int:

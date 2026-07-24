@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -49,6 +50,13 @@ def _make_state(request_id: str = "req1", current_step: int = 1, pending_confirm
     )
     plan = Plan(request_id=request_id, actions=[action], created_at=NOW, model_id="local-llm-1")
     history_entry = HistoryEntry(action=action, decision=decision, result=result, verification=None)
+    # Whoever sets pending_confirmation on a live state is expected to set
+    # pending_confirmation_hash alongside it -- mirror that here rather
+    # than relying on save_state to derive it, since save_state is
+    # allowed to just trust an already-set hash.
+    pending_hash = (
+        hashlib.sha256(pending_confirmation.encode("utf-8")).hexdigest() if pending_confirmation else None
+    )
     return TaskState(
         request_id=request_id,
         status=TaskStatus.RUNNING,
@@ -56,6 +64,7 @@ def _make_state(request_id: str = "req1", current_step: int = 1, pending_confirm
         plan=plan,
         history=[history_entry],
         pending_confirmation=pending_confirmation,
+        pending_confirmation_hash=pending_hash,
         updated_at=NOW,
     )
 
@@ -127,6 +136,20 @@ def test_matches_pending_wrong_token():
 def test_matches_pending_none_pending_returns_false():
     state = _make_state(pending_confirmation=None)
     assert store.matches_pending(state, "any-token") is False
+
+
+def test_matches_pending_still_works_after_a_reload():
+    # This is the whole point of comparing against pending_confirmation_hash
+    # instead of pending_confirmation: after a save/load round trip, the
+    # plaintext token is gone, but validation must still work correctly.
+    store.save_state(_make_state(pending_confirmation="tok-abc123"))
+
+    reloaded = store.load_state("req1")
+    assert reloaded.pending_confirmation is None  # plaintext really is gone
+    assert reloaded.pending_confirmation_hash is not None  # hash survived
+
+    assert store.matches_pending(reloaded, "tok-abc123") is True
+    assert store.matches_pending(reloaded, "tok-wrong") is False
 
 
 def test_get_audit_trail_returns_only_matching_request_in_order():
