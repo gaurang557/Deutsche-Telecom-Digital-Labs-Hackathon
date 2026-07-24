@@ -1,0 +1,129 @@
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from app.api.routes import get_planner
+from app.main import app
+from app.schemas import DraftAction, DraftPlan, TaskRequest
+
+
+class FakePlanner:
+    def __init__(self, draft: DraftPlan) -> None:
+        self.draft = draft
+        self.calls = 0
+
+    async def create_draft(self, request: TaskRequest) -> DraftPlan:
+        self.calls += 1
+        return self.draft
+
+
+@pytest.fixture
+def calculator_draft() -> DraftPlan:
+    return DraftPlan(
+        summary="Calculate 25 multiplied by 4",
+        actions=[
+            DraftAction(
+                step_key="open",
+                type="open_application",
+                target="Calculator",
+                expected_result={"application": "Calculator", "state": "focused"},
+            ),
+            DraftAction(
+                step_key="type",
+                type="type_text",
+                target="Calculator",
+                parameters={"text": "25*4"},
+                depends_on=["open"],
+                expected_result={"screen_contains": "100"},
+            ),
+        ],
+    )
+
+
+def make_client(planner: Any) -> TestClient:
+    app.dependency_overrides[get_planner] = lambda: planner
+    return TestClient(app)
+
+
+def test_create_plan_assigns_ids_and_resolves_dependencies(
+    calculator_draft: DraftPlan,
+) -> None:
+    planner = FakePlanner(calculator_draft)
+
+    with make_client(planner) as client:
+        response = client.post(
+            "/api/v1/plans",
+            json={"text": "Open Calculator and calculate 25 multiplied by 4"},
+        )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    plan = response.json()["plan"]
+    assert plan["plan_id"]
+    assert [action["sequence"] for action in plan["actions"]] == [1, 2]
+    assert plan["actions"][1]["depends_on"] == [plan["actions"][0]["action_id"]]
+    assert plan["actions"][0]["risk"] == "low"
+    assert plan["actions"][0]["requires_confirmation"] is False
+    assert planner.calls == 1
+
+
+def test_destructive_action_is_classified_by_application() -> None:
+    planner = FakePlanner(
+        DraftPlan(
+            summary="Delete a file",
+            actions=[
+                DraftAction(
+                    step_key="delete",
+                    type="delete_file",
+                    target="/tmp/example.txt",
+                    expected_result={"file_exists": False},
+                )
+            ],
+        )
+    )
+
+    with make_client(planner) as client:
+        response = client.post(
+            "/api/v1/plans",
+            json={"text": "Delete /tmp/example.txt"},
+        )
+    app.dependency_overrides.clear()
+
+    action = response.json()["plan"]["actions"][0]
+    assert action["risk"] == "high"
+    assert action["requires_confirmation"] is True
+
+
+def test_control_intent_bypasses_ollama(calculator_draft: DraftPlan) -> None:
+    planner = FakePlanner(calculator_draft)
+
+    with make_client(planner) as client:
+        response = client.post("/api/v1/plans", json={"text": "cancel"})
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json()["control_intent"] == "cancel"
+    assert response.json()["plan"] is None
+    assert planner.calls == 0
+
+
+def test_forward_dependency_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown or forward dependencies"):
+        DraftPlan(
+            summary="Invalid plan",
+            actions=[
+                DraftAction(
+                    step_key="first",
+                    type="click_element",
+                    target="button",
+                    depends_on=["second"],
+                ),
+                DraftAction(
+                    step_key="second",
+                    type="open_application",
+                    target="Calculator",
+                ),
+            ],
+        )
