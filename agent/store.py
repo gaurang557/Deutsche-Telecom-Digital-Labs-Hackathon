@@ -15,7 +15,7 @@ import json
 import sqlite3
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import TypeAdapter
 
@@ -250,6 +250,45 @@ def append_audit_event(event: AuditEvent) -> None:
             f"event_type={event.event_type} action_id={event.action_id} error={exc!r}",
             file=sys.stderr,
         )
+
+
+def log(
+    request_id: str,
+    event_type: str,
+    details: dict,
+    action_id: str | None = None,
+    rule_id: str | None = None,
+) -> None:
+    """Write one audit event. This is the function to call -- everyone
+    outside this module should use this, not append_audit_event directly.
+
+    Two guarantees, both automatic, neither optional:
+
+    1. `details` is redacted for you. Pass the raw dict as you built
+       it -- emails, tokens, whatever ended up in there -- you do not
+       call redact_sensitive_data() yourself first. This function does
+       it before the event is ever constructed.
+    2. This never raises. A write that fails (including one still
+       locked after busy_timeout runs out) is dropped rather than
+       crashing your request -- but the drop is printed to stderr, not
+       silently swallowed, so you'll see it happen during testing
+       instead of an event just quietly never showing up later.
+
+    Pass `action_id` whenever this event concerns one specific action
+    (an attempt, its verification, a recovery decision) -- that's the
+    only thing that lets the audit trail join those together later.
+    Leave it out for task-level events (transcript received, plan
+    created, task paused/resumed/completed, ...).
+    """
+    event = AuditEvent(
+        timestamp=datetime.now(timezone.utc),
+        request_id=request_id,
+        event_type=event_type,
+        details_redacted=redact_sensitive_data(details),
+        rule_id=rule_id,
+        action_id=action_id,
+    )
+    append_audit_event(event)
 
 
 def get_audit_trail(request_id: str) -> list[AuditEvent]:

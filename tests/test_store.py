@@ -177,3 +177,15 @@ def test_append_audit_event_redacts_as_a_second_line_of_defence():
     conn = store._require_connection()
     raw_row = conn.execute("SELECT details_json FROM audit_events").fetchone()[0]
     assert "hunter2" not in raw_row
+
+
+def test_log_redacts_an_email_before_writing():
+    store.log("req1", "transcript_received", {"text": "email me at bob@example.com"})
+
+    trail = store.get_audit_trail("req1")
+    assert "<EMAIL>" in trail[0].details_redacted["text"]
+    assert "bob@example.com" not in trail[0].details_redacted["text"]
+
+    conn = store._require_connection()
+    raw_row = conn.execute("SELECT details_json FROM audit_events").fetchone()[0]
+    assert "bob@example.com" not in raw_row
