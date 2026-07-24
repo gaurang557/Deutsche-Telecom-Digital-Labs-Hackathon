@@ -150,12 +150,17 @@ executor thought it succeeded.
 
 ## 3. Available actions
 
-Legend for **Risk** (intended deterministic classification; enforced by policy
-in a later milestone — informational for you now): `READ` (no change),
-`MODIFY` (creates/edits a working file), `CONSEQUENTIAL` (needs confirmation
-later). `target` is always the primary path.
+Legend for **Risk** — set by our deterministic policy; **the planner only
+*ingests* it, it never sets it** (informational here, enforced by policy in a
+later milestone). Values (shared vocabulary + our `FORBIDDEN`):
+`NONE` (read-only) · `LOW` (local, reversible) · `MEDIUM` (creates state) ·
+`HIGH` (destructive but local: overwrite/delete/bulk-rename) ·
+`CONSEQUENTIAL` (leaves the machine: send/submit/publish/purchase) ·
+`FORBIDDEN` (always denied). `MEDIUM`+ will require confirmation once the real
+policy lands. No current file action is `CONSEQUENTIAL` or `FORBIDDEN`.
+`target` is always the primary path.
 
-### Read-only (Risk: READ, verification `skipped`)
+### Read-only (Risk: `NONE`, verification `skipped`)
 
 #### `file.exists`
 - **Use:** check whether a path exists and what kind it is.
@@ -180,7 +185,7 @@ later). `target` is always the primary path.
   - `max_bytes` (int, optional, default `65536`) — read cap.
 - **evidence:** `{ path, size, encoding, truncated: bool, content: string }`.
 
-### Modifying (Risk: MODIFY, verified)
+### Create / modify (Risk: `MEDIUM`, verified)
 
 #### `file.copy`
 - **Use:** copy a single file.
@@ -192,18 +197,7 @@ later). `target` is always the primary path.
 - **side_effects:** `[{ "type": "file.created", "target": <dst> }]`.
 - **verification:** destination exists AND its hash matches the source.
 - **notes:** parent dir of `destination` must already exist (use `file.mkdir`);
-  directory copy is not supported.
-
-#### `file.move`
-- **Use:** move / rename a single file.
-- **target:** source file path.
-- **parameters:**
-  - `destination` (string, **required**).
-  - `overwrite` (bool, optional, default `false`).
-- **evidence:** `{ source, destination, sha256 }`.
-- **side_effects:** `[{ "type": "file.moved", "source": <src>, "target": <dst> }]`.
-- **verification:** destination exists, source is gone, hash matches pre-move fingerprint.
-- **notes:** rename = a move whose `destination` is in the same directory.
+  directory copy is not supported. `overwrite: true` escalates risk to `HIGH`.
 
 #### `file.write_text`
 - **Use:** create or overwrite a text file with given content.
@@ -215,7 +209,8 @@ later). `target` is always the primary path.
 - **evidence:** `{ path, size, sha256 }`.
 - **side_effects:** `[{ "type": "file.written", "target": <path> }]`.
 - **verification:** file re-read; content equals what was requested.
-- **notes:** parent dir must exist.
+- **notes:** parent dir must exist. `overwrite: true` (replacing an existing
+  file) escalates risk to `HIGH`.
 
 #### `file.mkdir`
 - **Use:** create a directory.
@@ -227,7 +222,22 @@ later). `target` is always the primary path.
 - **side_effects:** `[{ "type": "dir.created", "target": <path> }]`.
 - **verification:** directory now exists.
 
-### Consequential (Risk: CONSEQUENTIAL — will require confirmation later, verified)
+### Destructive · local (Risk: `HIGH`, verified)
+
+> `HIGH` = destructive but local. These do **not** leave the machine (that would
+> be `CONSEQUENTIAL`), but they will require confirmation once the real policy
+> lands, and are **never auto-retried**.
+
+#### `file.move`
+- **Use:** move / rename a single file.
+- **target:** source file path.
+- **parameters:**
+  - `destination` (string, **required**).
+  - `overwrite` (bool, optional, default `false`).
+- **evidence:** `{ source, destination, sha256 }`.
+- **side_effects:** `[{ "type": "file.moved", "source": <src>, "target": <dst> }]`.
+- **verification:** destination exists, source is gone, hash matches pre-move fingerprint.
+- **notes:** rename = a move whose `destination` is in the same directory.
 
 #### `file.delete`
 - **Use:** delete a single file.
@@ -246,7 +256,7 @@ later). `target` is always the primary path.
 - **ActionStatus:** `success`, `failed`, `denied`, `needs_confirmation`, `clarify`, `cancelled`.
 - **VerificationStatus:** `passed`, `failed`, `skipped`.
 - **PolicyOutcome** (internal; you don't set it): `allow`, `deny`, `confirm`, `clarify`.
-- **RiskLevel** (internal; you don't set it): `read`, `navigate`, `modify`, `consequential`, `forbidden`.
+- **RiskLevel** (set by our policy; you only ingest it): `none`, `low`, `medium`, `high`, `consequential`, `forbidden`.
 
 ---
 

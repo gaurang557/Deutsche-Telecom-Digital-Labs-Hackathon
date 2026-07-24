@@ -46,7 +46,7 @@ class AllowAllPolicy(Policy):
             task_id=action.task_id,
             action_id=action.action_id,
             outcome=PolicyOutcome.ALLOW,
-            risk_level=RiskLevel.READ,
+            risk_level=RiskLevel.NONE,
             rule_id="MOCK-ALLOW-ALL",
             reason="Mock policy: allow all.",
             action_hash=action_hash(action),
@@ -59,7 +59,7 @@ class ConfigurablePolicy(Policy):
     def __init__(
         self,
         outcome: PolicyOutcome = PolicyOutcome.ALLOW,
-        risk_level: RiskLevel = RiskLevel.READ,
+        risk_level: RiskLevel = RiskLevel.NONE,
         rule_id: str = "MOCK-CONFIGURABLE",
         reason: str = "Mock configurable policy.",
     ) -> None:

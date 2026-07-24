@@ -37,13 +37,20 @@ class PolicyOutcome(str, Enum):
 
 
 class RiskLevel(str, Enum):
-    """Deterministic risk classes (computed by the policy engine, never the LLM)."""
+    """Deterministic risk classes.
 
-    READ = "read"
-    NAVIGATE = "navigate"
-    MODIFY = "modify"
-    CONSEQUENTIAL = "consequential"
-    FORBIDDEN = "forbidden"
+    Set by deterministic code (our policy engine / pipeline), never proposed by
+    the LLM — the LLM only *ingests* the resulting risk. Values mirror the shared
+    team vocabulary (agent/models.py) PLUS `FORBIDDEN`, which we add for requests
+    that must always be denied (there is no safe/confirmable version of them).
+    """
+
+    NONE = "none"                    # read-only, no side effects
+    LOW = "low"                      # local, reversible (e.g. type into an unsaved draft)
+    MEDIUM = "medium"                # creates state (e.g. a new file)
+    HIGH = "high"                    # destructive but local (overwrite, delete, bulk rename)
+    CONSEQUENTIAL = "consequential"  # leaves the machine (send, submit, publish, purchase)
+    FORBIDDEN = "forbidden"          # never allowed (shell/registry/commands from untrusted content)
 
 
 class ErrorCode(str, Enum):
