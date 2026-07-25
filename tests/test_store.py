@@ -1,5 +1,5 @@
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -18,7 +18,7 @@ from agent.models import (
     TaskStatus,
 )
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(UTC)
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,11 @@ def fresh_db():
     yield
 
 
-def _make_state(request_id: str = "req1", current_step: int = 1, pending_confirmation: str | None = None) -> TaskState:
+def _make_state(
+    request_id: str = "req1",
+    current_step: int = 1,
+    pending_confirmation: str | None = None,
+) -> TaskState:
     action = Action(
         id=f"{request_id}-s1",
         type="update_spreadsheet",
@@ -39,7 +43,11 @@ def _make_state(request_id: str = "req1", current_step: int = 1, pending_confirm
         step_index=1,
     )
     decision = PolicyDecision(
-        action_id=action.id, outcome=PolicyOutcome.ALLOW, rule_id="R-001", reason="low risk", decided_at=NOW
+        action_id=action.id,
+        outcome=PolicyOutcome.ALLOW,
+        rule_id="R-001",
+        reason="low risk",
+        decided_at=NOW,
     )
     result = ActionResult(
         action_id=action.id,
@@ -55,7 +63,9 @@ def _make_state(request_id: str = "req1", current_step: int = 1, pending_confirm
     # than relying on save_state to derive it, since save_state is
     # allowed to just trust an already-set hash.
     pending_hash = (
-        hashlib.sha256(pending_confirmation.encode("utf-8")).hexdigest() if pending_confirmation else None
+        hashlib.sha256(pending_confirmation.encode("utf-8")).hexdigest()
+        if pending_confirmation
+        else None
     )
     return TaskState(
         request_id=request_id,
@@ -69,7 +79,11 @@ def _make_state(request_id: str = "req1", current_step: int = 1, pending_confirm
     )
 
 
-def _make_event(request_id: str = "req1", event_type: str = "action_attempted", details: dict | None = None) -> AuditEvent:
+def _make_event(
+    request_id: str = "req1",
+    event_type: str = "action_attempted",
+    details: dict | None = None,
+) -> AuditEvent:
     return AuditEvent(
         timestamp=NOW,
         request_id=request_id,
@@ -110,7 +124,9 @@ def test_pending_confirmation_plaintext_never_reaches_disk():
     store.save_state(_make_state(pending_confirmation="super-secret-token"))
 
     conn = store._require_connection()
-    row = conn.execute("SELECT pending_confirmation_hash FROM tasks WHERE request_id = 'req1'").fetchone()
+    row = conn.execute(
+        "SELECT pending_confirmation_hash FROM tasks WHERE request_id = 'req1'"
+    ).fetchone()
     assert row[0] is not None
     assert row[0] != "super-secret-token"  # only the hash is stored
 

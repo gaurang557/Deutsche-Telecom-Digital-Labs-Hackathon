@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agent import audit_view, store
 from agent.models import AuditEvent
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(UTC)
 
 
 def test_long_detail_value_is_truncated_with_ellipsis(tmp_path, capsys):

@@ -66,6 +66,7 @@ in order with spaces, never underscores. Map PDF to .pdf, spreadsheet to .xlsx,
 document to .docx, and presentation to .pptx. Example: "the north summary PDF
 in my archive folder on Desktop" -> Desktop/archive/north summary.pdf. Explicit
 quoted filename or path wins unchanged.
+An Excel workbook uses .xlsx: .xlsx is Excel, always .xlsx and never .docx.
 When the user asks you to CREATE something, never answer with open_file, read_file,
 or any other action that only inspects an existing file: opening a file that does
 not exist yet can never satisfy a create request.

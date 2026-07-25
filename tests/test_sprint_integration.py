@@ -149,6 +149,19 @@ class _FixedPlanner:
         return self._draft
 
 
+def _approval_payload(plan: dict[str, Any]) -> dict[str, Any]:
+    """Approve the exact action hashes exposed by the production planning API."""
+    hashes = {
+        action["action_id"]: action["confirmation_hash"]
+        for action in plan["actions"]
+        if action["requires_confirmation"] and action["confirmation_hash"]
+    }
+    return {
+        "approved_action_ids": list(hashes),
+        "approved_action_hashes": hashes,
+    }
+
+
 @pytest.mark.asyncio
 async def test_pdf_to_xlsx_golden_path_uses_real_evidence_and_reopen_verification(
     tmp_path: Path,
@@ -213,13 +226,11 @@ def test_pdf_to_xlsx_runs_through_production_api_path(tmp_path: Path) -> None:
                 },
             )
             assert planned.status_code == 201
-            plan_id = planned.json()["plan"]["plan_id"]
+            planned_plan = planned.json()["plan"]
+            plan_id = planned_plan["plan_id"]
             executed = client.post(
                 f"/api/v1/plans/{plan_id}/execute",
-                json={
-                    "approved_action_ids": [],
-                    "approved_action_hashes": {},
-                },
+                json=_approval_payload(planned_plan),
             )
     finally:
         app.dependency_overrides.clear()
@@ -262,10 +273,11 @@ def test_step_detail_is_surfaced_in_the_response_but_never_persisted(
                 "/api/v1/plans",
                 json={"text": f"Copy North revenue from {pdf_path} into {workbook_path}"},
             )
-            plan_id = planned.json()["plan"]["plan_id"]
+            planned_plan = planned.json()["plan"]
+            plan_id = planned_plan["plan_id"]
             executed = client.post(
                 f"/api/v1/plans/{plan_id}/execute",
-                json={"approved_action_ids": [], "approved_action_hashes": {}},
+                json=_approval_payload(planned_plan),
             )
     finally:
         app.dependency_overrides.clear()
@@ -718,7 +730,7 @@ async def test_docx_to_pptx_template_replacement_second_workflow(
     )
     response = await HybridExecutor().execute_plan(plan, set())
 
-    assert response.status == "completed"
+    assert response.status == "completed", [result.error for result in response.results]
     updated = Presentation(output_path)
     text = "\n".join(
         shape.text
@@ -965,7 +977,10 @@ def test_the_docx_to_pptx_workflow_shape_reports_no_recoverable_problem(
             ),
         ],
     )
-    request = "Read the recommendation from report_summary.docx and update slide 3 of summary_template.pptx."
+    request = (
+        "Read the recommendation from report_summary.docx and update slide 3 "
+        "of summary_template.pptx."
+    )
 
     assert find_recoverable_problems(draft, request) == []
     assert find_advisory_problems(draft) == []

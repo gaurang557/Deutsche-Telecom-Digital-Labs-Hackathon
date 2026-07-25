@@ -124,6 +124,12 @@ _URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FILENAME_DETERMINER_PATTERN = re.compile(r"\b(?:the|a|an)\b", re.IGNORECASE)
+# Words that describe an artifact's state rather than name it. Without this
+# guard, "a new presentation copy" grounds an existing template target to
+# "new.pptx", so the read/replace step fails before it can create the copy.
+_GENERIC_FILENAME_PHRASES = frozenset(
+    {"blank", "current", "empty", "existing", "fresh", "new", "same"}
+)
 _FILENAME_KIND_PATTERNS = {
     "pdf": re.compile(r"\bpdf\b", re.IGNORECASE),
     "spreadsheet": re.compile(r"\b(?:spreadsheet|workbook)\b", re.IGNORECASE),
@@ -323,6 +329,7 @@ def _spoken_filename_candidate(request_text: str, family: str) -> str | None:
             or len(phrase) > _MAX_SPOKEN_BASENAME_CHARS
             or "_" in phrase
             or _SPOKEN_BASENAME_PATTERN.fullmatch(phrase) is None
+            or phrase.casefold() in _GENERIC_FILENAME_PHRASES
         ):
             continue
         candidates.append(" ".join(phrase.split()))
@@ -537,7 +544,7 @@ def find_extension_family_mismatch(
     candidates = [target]
     for key in _PATH_PARAMETERS:
         value = parameters.get(key)
-        if isinstance(value, str):
+        if isinstance(value, str) and not is_absent_path_value(value):
             candidates.append(value)
 
     if action_type.value in _TEXT_ONLY_ACTIONS:

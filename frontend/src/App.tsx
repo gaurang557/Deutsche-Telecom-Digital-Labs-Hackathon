@@ -379,7 +379,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand__mark">V</span>
-          <span>Voice desk</span>
+          <span>Voice deck</span>
         </div>
 
         <button className="new-task" type="button" onClick={resetConversation}>
@@ -430,7 +430,7 @@ export default function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">VOICE-CONTROLLED AGENT</p>
-            <h1>Voice desk</h1>
+            <h1>Voice deck</h1>
           </div>
           <div className="privacy-pill">
             <span aria-hidden="true">◆</span>
@@ -781,7 +781,7 @@ export default function App() {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder="Ask Voice desk to do something on your desktop…"
+              placeholder="Ask Voice deck to do something on your desktop…"
               rows={1}
               disabled={appBusy}
               aria-label="Task request"
@@ -817,9 +817,9 @@ export default function App() {
               </button>
             </div>
           </form>
-          {error && <ErrorNotice details={error} />}
+          {error && <ErrorNotice title="Voice capture failed" details={error} />}
           <p className="composer-note">
-            Voice desk can make mistakes. Review plans before execution.
+            Voice deck can make mistakes. Review plans before execution.
           </p>
         </div>
       </main>

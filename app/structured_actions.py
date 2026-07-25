@@ -164,7 +164,7 @@ step's result showed you its name: left out it means that workbook's own first
 sheet, while a guessed name can fail the whole task. Name the sheet only when you
 are creating the workbook, where you are the one choosing the name.
 
-When no exact destination cell was supplied, never assume a workbook's layout.
+Never assume a workbook's layout when no exact destination cell was supplied.
 There is no action that searches a workbook, so read it: spreadsheet.read_range
 over a generous area such as A1:F30 shows where the labels and value columns are.
 Do not assume labels are in column A, values are in column B, or data starts on
