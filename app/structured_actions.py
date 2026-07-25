@@ -153,11 +153,10 @@ Parameters, exactly these names and no others:
   file.write_text: content, overwrite. file.copy / file.move: destination,
   overwrite. file.mkdir: parents, exist_ok.
 
-Plan shape for "take a value out of one file and put it into a workbook" — the
-plan is incomplete, and nothing happens, if the writing step is missing:
-  1. read the source with the action family for its extension
-  2. read a generous area of the workbook to see its layout
-  3. spreadsheet.write_cell, with a $ref value bound to step 1
+For "take a value out of one file and put it into a workbook", keep the necessary
+source/layout reads and finish with spreadsheet.write_cell whose $ref value binds
+to the source evidence. A workbook read is unnecessary when the user supplied the
+exact destination cell.
 
 Never invent a sheet name you have not been shown. In a workbook that already
 exists, leave the sheet parameter out unless the user named a sheet or an earlier
@@ -165,12 +164,11 @@ step's result showed you its name: left out it means that workbook's own first
 sheet, while a guessed name can fail the whole task. Name the sheet only when you
 are creating the workbook, where you are the one choosing the name.
 
-Never assume a workbook's layout. There is no action that searches a workbook, so
-read it: spreadsheet.read_range over a generous area such as A1:F30 shows you
-where the labels and the value columns actually are. Do not assume that labels are
-in column A, that values are in column B, or that data starts on row 2 — any of
-those may be false, and a wrong cell silently writes to the wrong place. Read the
-layout, then choose the cell that belongs to the label the user named.
+When no exact destination cell was supplied, never assume a workbook's layout.
+There is no action that searches a workbook, so read it: spreadsheet.read_range
+over a generous area such as A1:F30 shows where the labels and value columns are.
+Do not assume labels are in column A, values are in column B, or data starts on
+row 2 — any may be false, and a wrong cell silently writes to the wrong place.
 
 Never reuse a sheet name or cell reference from an example; those are illustrations
 of form, not of content.

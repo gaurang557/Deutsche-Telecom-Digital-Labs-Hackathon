@@ -10,6 +10,7 @@ from app.config import Settings
 from app.planning.exceptions import InvalidPlannerResponseError
 from app.planning.plan_repair import (
     RecoverablePlanError,
+    complete_explicit_spreadsheet_cell_write,
     correct_action_families,
     find_advisory_problems,
     find_recoverable_problems,
@@ -77,10 +78,9 @@ You cannot create a new PDF, a new Word document, or a new PowerPoint file from
 nothing, and you have no action that deletes files or runs commands. If the user
 asks for something none of your action types can do, say so plainly in the summary
 instead of inventing a plan that would fail.
-For a PDF-to-workbook request, read the PDF with pdf.read_text, inspect the bounded
-workbook area with spreadsheet.read_range, then use spreadsheet.write_cell. Bind
-the write value to the earlier PDF evidence with a result reference rather than
-copying or guessing the value.
+For a PDF-to-workbook request, read the PDF and finish with spreadsheet.write_cell
+whose value references that read. Read the workbook first only when the user did
+not supply the exact destination cell.
 Whenever the user asks you to change something — update, fill in, replace, put,
 record, move, rename — the plan MUST end with the action that performs that
 change. Reading steps only gather what the change needs; a plan made only of
@@ -306,6 +306,25 @@ class OllamaPlanner:
                             "step_key": correction.step_key,
                             "requested_type": correction.previous,
                             "corrected_type": correction.corrected,
+                        },
+                    )
+                draft, completion = complete_explicit_spreadsheet_cell_write(
+                    draft,
+                    request.text,
+                )
+                if completion is not None:
+                    _LOGGER.info(
+                        "plan_revised: completed explicit spreadsheet write for %s",
+                        completion.describe(),
+                        extra={
+                            "event": "plan_revised",
+                            "outcome": "explicit_cell_write_completed",
+                            "step_key": completion.step_key,
+                            "source_step_key": completion.source_step_key,
+                            "workbook_step_key": completion.workbook_step_key,
+                            "target": completion.target,
+                            "cell": completion.cell,
+                            "regex": completion.regex,
                         },
                     )
                 problems = find_recoverable_problems(draft, request.text)

@@ -175,6 +175,58 @@ _MUTATION_INTENT_PATTERN = re.compile(
     rf"\b(?:{'|'.join(_MUTATION_VERBS)})\b",
     re.IGNORECASE,
 )
+_SPREADSHEET_CELL_WRITE_VERB_PATTERN = re.compile(
+    r"\b(?:write|put|set|record)\b",
+    re.IGNORECASE,
+)
+_SPREADSHEET_KIND_PATTERN = re.compile(
+    r"\b(?:spreadsheet|workbook|excel)\b",
+    re.IGNORECASE,
+)
+_SMALL_ROW_NUMBERS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+}
+_TENS_ROW_NUMBERS = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+_CELL_REFERENCE_PATTERN = re.compile(
+    rf"""
+    \bcell\s+(?P<column>[a-z])
+    (?:
+        \s*(?P<digits>[1-9]\d{{0,6}})
+        |\s+(?P<small>{'|'.join(_SMALL_ROW_NUMBERS)})
+        |\s+(?P<tens>{'|'.join(_TENS_ROW_NUMBERS)})
+            (?:[\s-]+(?P<ones>{'|'.join(tuple(_SMALL_ROW_NUMBERS)[:9])}))?
+    )
+    \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 def detect_mutation_intent(text: str) -> bool:
@@ -185,6 +237,57 @@ def detect_mutation_intent(text: str) -> bool:
     REJECT a plan that changes nothing, never to add or upgrade an action.
     """
     return _MUTATION_INTENT_PATTERN.search(text) is not None
+
+
+def detect_spreadsheet_cell_write_intent(text: str) -> bool:
+    """Whether the user explicitly asks to write a spreadsheet cell."""
+    return (
+        _SPREADSHEET_CELL_WRITE_VERB_PATTERN.search(text) is not None
+        and _SPREADSHEET_KIND_PATTERN.search(text) is not None
+        and re.search(r"\bcell\b", text, re.IGNORECASE) is not None
+    )
+
+
+def find_explicit_spreadsheet_cell(text: str) -> str | None:
+    """Normalize one conservative spoken cell reference for repair feedback."""
+    matches = list(_CELL_REFERENCE_PATTERN.finditer(text))
+    if len(matches) != 1:
+        return None
+
+    match = matches[0]
+    if digits := match.group("digits"):
+        row = int(digits)
+    elif small := match.group("small"):
+        row = _SMALL_ROW_NUMBERS[small.casefold()]
+    else:
+        row = _TENS_ROW_NUMBERS[match.group("tens").casefold()]
+        if ones := match.group("ones"):
+            row += _SMALL_ROW_NUMBERS[ones.casefold()]
+    return f"{match.group('column').upper()}{row}"
+
+
+def _spreadsheet_cell_write_repair(request_text: str) -> str | None:
+    """Targeted reject-and-replan guidance for an omitted explicit cell write."""
+    if not detect_spreadsheet_cell_write_intent(request_text):
+        return None
+
+    cell = find_explicit_spreadsheet_cell(request_text)
+    cell_instruction = (
+        f'Use "cell": "{cell}".'
+        if cell is not None
+        else 'Copy the explicit cell from the request into "cell"; do not invent one.'
+    )
+    return (
+        "The request explicitly asks for a spreadsheet cell write, but this plan "
+        "only reads. Keep every necessary existing read and append one final "
+        f"{StructuredActionType.SPREADSHEET_WRITE_CELL.value} targeting the named "
+        f"spreadsheet/workbook. {cell_instruction} Set \"value\" to a $ref object "
+        "bound to the relevant source-read evidence, with \"regex\" containing one "
+        "capture group, \"group\": 1, and \"coerce\": \"number\" when the requested "
+        "value is numeric. Make the write depend on that source read and any "
+        "necessary existing workbook read. Use \"overwrite\": false unless the user "
+        "explicitly requested overwrite, and do not stop after the reads."
+    )
 
 
 def _home() -> Path | None:
@@ -223,6 +326,24 @@ def _spoken_filename_candidate(request_text: str, family: str) -> str | None:
     return candidates[0]
 
 
+def find_spoken_filename(request_text: str, family: str) -> str | None:
+    """Return one unambiguous spoken filename with its canonical extension."""
+    allowed = _FAMILY_EXTENSIONS.get(family)
+    if allowed is None or len(allowed) != 1:
+        return None
+    extension = next(iter(allowed))
+    quoted_filename = re.compile(
+        rf"""(?:"[^"\r\n]*{re.escape(extension)}"|'[^'\r\n]*{re.escape(extension)}')""",
+        re.IGNORECASE,
+    )
+    if quoted_filename.search(request_text):
+        return None
+    basename = _spoken_filename_candidate(request_text, family)
+    if basename is None:
+        return None
+    return f"{basename}{extension}"
+
+
 def ground_spoken_filename(
     request_text: str,
     action_type: Any,
@@ -246,19 +367,12 @@ def ground_spoken_filename(
     if Path(target).suffix.casefold() != extension:
         return None
 
-    quoted_filename = re.compile(
-        rf"""(?:"[^"\r\n]*{re.escape(extension)}"|'[^'\r\n]*{re.escape(extension)}')""",
-        re.IGNORECASE,
-    )
-    if quoted_filename.search(request_text):
-        return None
-
-    basename = _spoken_filename_candidate(request_text, family)
-    if basename is None:
+    filename = find_spoken_filename(request_text, family)
+    if filename is None:
         return None
 
     separator = max(target.rfind("/"), target.rfind("\\"))
-    corrected = f"{target[: separator + 1]}{basename}{extension}"
+    corrected = f"{target[: separator + 1]}{filename}"
     if corrected == target or len(corrected) > 500:
         return None
     return corrected
@@ -621,6 +735,9 @@ def plan_omits_required_mutation(request_text: str, action_types: Iterable[Any])
         return None
     if any(action_mutates(action_type) for action_type in action_types):
         return None
+    spreadsheet_repair = _spreadsheet_cell_write_repair(request_text)
+    if spreadsheet_repair is not None:
+        return spreadsheet_repair
     return (
         "The request asks for something to be changed, but every step in this "
         "plan only reads. Add the step that actually performs the change "

@@ -1,8 +1,8 @@
-"""Deterministic draft repair, and the recoverable problems worth re-prompting for.
+"""Deterministic draft repair, completion, and recoverable re-prompting.
 
 WHY THIS EXISTS
 ---------------
-Two classes of planner mistake used to end a task outright, even though both are
+Three classes of planner mistake used to end a task outright, even though all are
 recoverable:
 
 * A mechanical one with exactly one right answer — `document.read_text` aimed at
@@ -13,27 +13,34 @@ recoverable:
   for a request that asked for a change, or a path/extension problem with no
   unambiguous correction. :func:`find_recoverable_problems` describes these so
   the planner's existing repair loop can re-prompt with a bounded message.
+* An explicit completion whose inputs all come from the user and existing draft —
+  one source read, zero or one workbook read, one requested cell, and one numeric
+  field. With no workbook read, an unambiguous same-folder workbook phrase supplies
+  only the basename. :func:`complete_explicit_spreadsheet_cell_write` appends the
+  canonical existing action only when every input is unique.
 
 Everything here is ordinary application code. Nothing consults the model, and
 nothing decides permission, risk, trust, confirmation, or verification.
 
 WHAT REPAIR MAY NEVER DO
 ------------------------
-Corrections may only ever *narrow or preserve* authority: a read stays a read,
-and a correction that would need confirmation when the original did not is
-refused (enforced by `canonical_family_correction`). The recoverable-problem
-checks are pure functions returning messages — they can only cause a REJECTION
-and a re-prompt, never the addition or authorisation of an action.
+No repair decides authority, permission, risk, confirmation, policy, execution,
+or verification. Family corrections preserve authority. Explicit completion is
+visible in plan review and still passes through the ordinary policy and executor;
+ambiguous inputs fail closed. Recoverable-problem checks only cause rejection.
 """
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple
 
 from pydantic import ValidationError
 
 from app.planning.capabilities import (
+    detect_spreadsheet_cell_write_intent,
     find_explicit_local_root_mismatch,
+    find_explicit_spreadsheet_cell,
     find_extension_family_mismatch,
     find_fabricated_user_profile_path,
     find_invalid_reference_group,
@@ -41,10 +48,73 @@ from app.planning.capabilities import (
     find_non_string_path_parameter,
     find_null_required_parameter,
     find_positional_search_text,
+    find_spoken_filename,
     plan_omits_required_mutation,
 )
-from app.schemas import DraftPlan
-from app.structured_actions import PATH_LIKE_PARAMETERS, canonical_family_correction
+from app.schemas import DraftPlan, StructuredActionType
+from app.structured_actions import (
+    PATH_LIKE_PARAMETERS,
+    action_mutates,
+    canonical_family_correction,
+)
+
+_TEXT_SOURCE_READ_TYPES = frozenset(
+    {
+        StructuredActionType.PDF_READ_TEXT,
+        StructuredActionType.DOCUMENT_READ_TEXT,
+        StructuredActionType.FILE_READ_TEXT,
+        StructuredActionType.PRESENTATION_READ_TEXT,
+    }
+)
+_SPREADSHEET_READ_TYPES = frozenset(
+    {
+        StructuredActionType.SPREADSHEET_READ_RANGE,
+        StructuredActionType.SPREADSHEET_READ_CELL,
+        StructuredActionType.SPREADSHEET_LIST_SHEETS,
+        StructuredActionType.SPREADSHEET_DIMENSIONS,
+    }
+)
+_NUMERIC_FIELD_FROM_SOURCE_PATTERN = re.compile(
+    r"""
+    \b(?:read|get|extract|find)\s+(?:the\s+)?
+    (?P<field>[a-z0-9][a-z0-9&'’+\- ]{0,119}?)\s+from\b
+    (?=\s+(?:the|a|an)\s+[^,.;:!?\r\n]{1,120}
+       \b(?:pdf|document|file|presentation|deck|powerpoint)\b)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_SAME_FOLDER_RELATION_PATTERN = re.compile(
+    r"\b(?:in|into|to)\s+(?:the\s+)?same\s+(?:folder|directory)\b",
+    re.IGNORECASE,
+)
+_AMBIGUOUS_FIELD_WORDS = frozenset(
+    {"a", "an", "and", "from", "into", "or", "the", "to"}
+)
+_NUMERIC_FIELD_WORDS = frozenset(
+    {
+        "amount",
+        "balance",
+        "cost",
+        "count",
+        "expense",
+        "income",
+        "margin",
+        "number",
+        "percent",
+        "percentage",
+        "price",
+        "profit",
+        "quantity",
+        "rate",
+        "revenue",
+        "sales",
+        "score",
+        "tax",
+        "total",
+        "units",
+        "value",
+    }
+)
 
 
 class RecoverablePlanError(ValueError):
@@ -69,6 +139,164 @@ class FamilyCorrection(NamedTuple):
 
     def describe(self) -> str:
         return f"{self.step_key}: {self.previous} -> {self.corrected}"
+
+
+class SpreadsheetWriteCompletion(NamedTuple):
+    """The bounded facts recorded when one explicit write is appended."""
+
+    step_key: str
+    source_step_key: str
+    workbook_step_key: str | None
+    target: str
+    cell: str
+    regex: str
+
+    def describe(self) -> str:
+        return (
+            f"{self.step_key}: {self.source_step_key} -> {self.target} "
+            f"cell {self.cell}"
+        )
+
+
+def _numeric_field_phrase(request_text: str) -> str | None:
+    """Extract one bounded field phrase immediately preceding a source reference."""
+    candidates: list[str] = []
+    for match in _NUMERIC_FIELD_FROM_SOURCE_PATTERN.finditer(request_text):
+        phrase = " ".join(match.group("field").split())
+        words = phrase.casefold().split()
+        if (
+            not 1 <= len(words) <= 8
+            or any(word in _AMBIGUOUS_FIELD_WORDS for word in words)
+            or not any(word in _NUMERIC_FIELD_WORDS for word in words)
+        ):
+            continue
+        candidates.append(phrase)
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def _numeric_field_regex(field_phrase: str) -> str:
+    label = r"\s+".join(re.escape(token) for token in field_phrase.split())
+    number = r"([+-]?(?:\d+(?:\.\d+)?|\.\d+))(?![\d.])"
+    return rf"{label}\s*:\s*{number}"
+
+
+def _same_folder_workbook_target(
+    request_text: str,
+    source_target: str,
+) -> str | None:
+    """Derive only a workbook basename under the source target's stated parent."""
+    if (
+        _SAME_FOLDER_RELATION_PATTERN.search(request_text) is None
+        or "://" in source_target
+    ):
+        return None
+    filename = find_spoken_filename(request_text, "spreadsheet")
+    if filename is None:
+        return None
+    separator = max(source_target.rfind("/"), source_target.rfind("\\"))
+    if separator < 0:
+        return None
+    target = f"{source_target[: separator + 1]}{filename}"
+    if len(target) > 500:
+        return None
+    return target
+
+
+def complete_explicit_spreadsheet_cell_write(
+    draft: DraftPlan,
+    request_text: str,
+) -> tuple[DraftPlan, SpreadsheetWriteCompletion | None]:
+    """Append one explicit cell write only when every semantic input is unique.
+
+    This composes an existing planner-visible action; it neither authorises nor
+    executes it. The returned draft is revalidated through Pydantic and will still
+    pass through semantic checks, normalisation, policy, review, and verification.
+    """
+    if not detect_spreadsheet_cell_write_intent(request_text):
+        return draft, None
+    cell = find_explicit_spreadsheet_cell(request_text)
+    if cell is None:
+        return draft, None
+    if any(action_mutates(action.type) for action in draft.actions):
+        return draft, None
+
+    source_reads = [
+        action for action in draft.actions if action.type in _TEXT_SOURCE_READ_TYPES
+    ]
+    workbook_reads = [
+        action for action in draft.actions if action.type in _SPREADSHEET_READ_TYPES
+    ]
+    if len(source_reads) != 1 or len(workbook_reads) > 1:
+        return draft, None
+
+    step_keys = [action.step_key for action in draft.actions]
+    if len(step_keys) != len(set(step_keys)) or len(draft.actions) >= 50:
+        return draft, None
+    field_phrase = _numeric_field_phrase(request_text)
+    if field_phrase is None:
+        return draft, None
+
+    source = source_reads[0]
+    workbook = workbook_reads[0] if workbook_reads else None
+    if workbook is not None:
+        workbook_target = workbook.target
+        workbook_step_key = workbook.step_key
+    else:
+        workbook_target = _same_folder_workbook_target(request_text, source.target)
+        workbook_step_key = None
+        if workbook_target is None:
+            return draft, None
+
+    step_key = "write_requested_cell"
+    suffix = 2
+    while step_key in step_keys:
+        step_key = f"write_requested_cell_{suffix}"
+        suffix += 1
+
+    regex = _numeric_field_regex(field_phrase)
+    payload = draft.model_dump(mode="json")
+    payload["actions"].append(
+        {
+            "step_key": step_key,
+            "type": StructuredActionType.SPREADSHEET_WRITE_CELL.value,
+            "target": workbook_target,
+            "description": "Write the requested value to the requested spreadsheet cell.",
+            "parameters": {
+                "cell": cell,
+                "value": {
+                    "$ref": f"{source.step_key}.evidence.text",
+                    "regex": regex,
+                    "group": 1,
+                    "coerce": "number",
+                },
+                "overwrite": False,
+            },
+            "depends_on": list(
+                dict.fromkeys(
+                    [source.step_key]
+                    + ([workbook_step_key] if workbook_step_key is not None else [])
+                )
+            ),
+            "expected_result": {
+                "cell": cell,
+                "value_source": source.step_key,
+            },
+        }
+    )
+    completion = SpreadsheetWriteCompletion(
+        step_key=step_key,
+        source_step_key=source.step_key,
+        workbook_step_key=workbook_step_key,
+        target=workbook_target,
+        cell=cell,
+        regex=regex,
+    )
+    try:
+        return DraftPlan.model_validate(payload), completion
+    except ValidationError:
+        return draft, None
 
 
 def correct_action_families(draft: DraftPlan) -> tuple[DraftPlan, list[FamilyCorrection]]:
