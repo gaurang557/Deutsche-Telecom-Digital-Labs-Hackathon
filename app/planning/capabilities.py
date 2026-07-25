@@ -117,6 +117,18 @@ _URL_PATTERN = re.compile(
     r"\b(?![A-Za-z]:[\\/])[A-Za-z][A-Za-z0-9+.-]*://\S+",
     re.IGNORECASE,
 )
+_FILENAME_DETERMINER_PATTERN = re.compile(r"\b(?:the|a|an)\b", re.IGNORECASE)
+_FILENAME_KIND_PATTERNS = {
+    "pdf": re.compile(r"\bpdf\b", re.IGNORECASE),
+    "spreadsheet": re.compile(r"\b(?:spreadsheet|workbook)\b", re.IGNORECASE),
+    "document": re.compile(r"\b(?:word\s+document|document)\b", re.IGNORECASE),
+    "presentation": re.compile(
+        r"\b(?:powerpoint\s+(?:presentation|deck)|powerpoint|presentation|deck)\b",
+        re.IGNORECASE,
+    ),
+}
+_SPOKEN_BASENAME_PATTERN = re.compile(r"[\w&+'’ -]+")
+_MAX_SPOKEN_BASENAME_CHARS = 120
 
 
 def detect_unsupported_request(text: str) -> str | None:
@@ -180,6 +192,76 @@ def _home() -> Path | None:
         return Path.home()
     except (OSError, RuntimeError):
         return None
+
+
+def _spoken_filename_candidate(request_text: str, family: str) -> str | None:
+    """Return one determiner-grounded basename phrase, or None if ambiguous."""
+    kind_pattern = _FILENAME_KIND_PATTERNS.get(family)
+    if kind_pattern is None:
+        return None
+
+    candidates: list[str] = []
+    for kind_match in kind_pattern.finditer(request_text):
+        determiners = list(
+            _FILENAME_DETERMINER_PATTERN.finditer(request_text, 0, kind_match.start())
+        )
+        if not determiners:
+            continue
+        phrase = request_text[determiners[-1].end() : kind_match.start()]
+        phrase = phrase.strip(" \t\r\n,.;:!?()[]{}")
+        if (
+            not phrase
+            or len(phrase) > _MAX_SPOKEN_BASENAME_CHARS
+            or "_" in phrase
+            or _SPOKEN_BASENAME_PATTERN.fullmatch(phrase) is None
+        ):
+            continue
+        candidates.append(" ".join(phrase.split()))
+
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def ground_spoken_filename(
+    request_text: str,
+    action_type: Any,
+    target: str,
+) -> str | None:
+    """Ground a structured target's basename in one explicit spoken file phrase.
+
+    Only the basename can change. The action family, directory, parameters, and
+    authority are inputs this helper cannot modify. Ambiguous phrases, URLs,
+    explicit quoted filenames, and paths outside an extension-bound structured
+    family are left untouched.
+    """
+    if not isinstance(action_type, StructuredActionType) or _URL_PATTERN.match(target):
+        return None
+
+    family = action_type.value.split(".", 1)[0]
+    allowed = _FAMILY_EXTENSIONS.get(family)
+    if allowed is None or len(allowed) != 1:
+        return None
+    extension = next(iter(allowed))
+    if Path(target).suffix.casefold() != extension:
+        return None
+
+    quoted_filename = re.compile(
+        rf"""(?:"[^"\r\n]*{re.escape(extension)}"|'[^'\r\n]*{re.escape(extension)}')""",
+        re.IGNORECASE,
+    )
+    if quoted_filename.search(request_text):
+        return None
+
+    basename = _spoken_filename_candidate(request_text, family)
+    if basename is None:
+        return None
+
+    separator = max(target.rfind("/"), target.rfind("\\"))
+    corrected = f"{target[: separator + 1]}{basename}{extension}"
+    if corrected == target or len(corrected) > 500:
+        return None
+    return corrected
 
 
 def _explicit_request_root(text: str) -> str | None:

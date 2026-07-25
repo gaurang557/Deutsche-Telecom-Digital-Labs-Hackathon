@@ -58,15 +58,13 @@ never write a literal C:\\Users\\... path that the user did not say, because you
 not know the account name. Never emit ~/ or /tmp paths.
 Use the alias the user actually named, and only that one. "On my desktop" is
 Desktop; Downloads is not a default and must appear only when the user said
-downloads. Never infer "latest" or "newest". Choosing the wrong alias makes the
-file unfindable.
-When the user names a folder the file is in, keep that folder in the path as its
-own segment after the alias, so "the invoice PDF in my archive folder on Desktop"
-is Desktop/archive/invoice.pdf. Never drop a folder the user named, and never move
-it to a different alias.
-Match the file extension to the kind of document: .xlsx is Excel/a spreadsheet/a
-workbook, .docx is Word, .pptx is PowerPoint, .pdf is a PDF. An "Excel doc" or
-"spreadsheet" is always .xlsx and never .docx.
+downloads. Never infer "latest"/"newest". Keep each named folder after its alias.
+For an unquoted file, derive its name only from the file-reference phrase, never
+from requested data: remove one leading the/a/an, preserve all descriptive words
+in order with spaces, never underscores. Map PDF to .pdf, spreadsheet to .xlsx,
+document to .docx, and presentation to .pptx. Example: "the north summary PDF
+in my archive folder on Desktop" -> Desktop/archive/north summary.pdf. Explicit
+quoted filename or path wins unchanged.
 When the user asks you to CREATE something, never answer with open_file, read_file,
 or any other action that only inspects an existing file: opening a file that does
 not exist yet can never satisfy a create request.

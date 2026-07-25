@@ -1,3 +1,4 @@
+import logging
 import os
 import platform
 from uuid import UUID, uuid4
@@ -6,6 +7,7 @@ from app.execution.hybrid import resolve_plan_target
 from app.planning.capabilities import (
     find_extension_family_mismatch,
     find_fabricated_user_profile_path,
+    ground_spoken_filename,
 )
 from app.planning.exceptions import InvalidPlannerResponseError
 from app.schemas import (
@@ -27,6 +29,8 @@ from app.structured_actions import (
     structured_confirmation_required,
     structured_risk,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 _HIGH_RISK_ACTIONS = {
     ActionType.CLOSE_APPLICATION,
@@ -136,6 +140,42 @@ def _reject_hallucinated_paths(draft: DraftPlan) -> None:
             )
 
 
+def _ground_spoken_filenames(request_text: str, draft: DraftPlan) -> DraftPlan:
+    """Copy a draft with conservatively grounded action target basenames."""
+    payload = draft.model_dump(mode="json")
+    revised = False
+    for action, action_payload in zip(
+        draft.actions,
+        payload["actions"],
+        strict=True,
+    ):
+        corrected = ground_spoken_filename(
+            request_text,
+            action.type,
+            action.target,
+        )
+        if corrected is None:
+            continue
+        action_payload["target"] = corrected
+        revised = True
+        _LOGGER.info(
+            "plan_revised: grounded filename for %s: %s -> %s",
+            action.step_key,
+            action.target,
+            corrected,
+            extra={
+                "event": "plan_revised",
+                "outcome": "filename_grounded",
+                "step_key": action.step_key,
+                "requested_target": action.target,
+                "corrected_target": corrected,
+            },
+        )
+    if not revised:
+        return draft
+    return DraftPlan.model_validate(payload)
+
+
 def _targets_read_by_plan(actions: list[DraftAction]) -> set[str]:
     """Normalised targets that some step of this plan needs to already exist.
 
@@ -178,6 +218,9 @@ def _resolve_target_for_plan(
 
 def build_action_plan(request: TaskRequest, draft: DraftPlan) -> ActionPlan:
     """Turn an untrusted model draft into an execution-engine contract."""
+    # Ground the basename before path resolution and before any description,
+    # confirmation decision, or confirmation hash derives from the target.
+    draft = _ground_spoken_filenames(request.text, draft)
     _reject_hallucinated_paths(draft)
     if platform.system() == "Windows":
         unsupported = [
