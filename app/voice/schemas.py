@@ -35,3 +35,4 @@ class VoiceHealthResponse(BaseModel):
     status: Literal["ok"]
     model: str
     model_loaded: bool
+    environment: Literal["local", "demo"] = "local"

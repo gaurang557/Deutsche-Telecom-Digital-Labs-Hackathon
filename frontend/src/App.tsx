@@ -17,6 +17,7 @@ interface VoiceHealth {
   status: string;
   model: string;
   model_loaded: boolean;
+  environment: "local" | "demo";
 }
 
 const LOW_CONFIDENCE = 0.5;
@@ -83,6 +84,7 @@ export default function App() {
   const [taskEvents, setTaskEvents] = useState<
     { event_type: string; message: string; created_at: string }[]
   >([]);
+  const demoMode = health?.environment === "demo";
   const {
     status,
     result,
@@ -91,7 +93,7 @@ export default function App() {
     liveSupported,
     start,
     stop,
-  } = useVoiceCapture();
+  } = useVoiceCapture(demoMode);
 
   const recording = status === "recording";
   const captureBusy = status === "requesting" || status === "transcribing";
@@ -311,9 +313,9 @@ export default function App() {
             <p className="eyebrow">VOICE-CONTROLLED AGENT</p>
             <h1>Voice desk</h1>
           </div>
-          <div className="privacy-pill">
+          <div className={`privacy-pill ${demoMode ? "privacy-pill--demo" : ""}`}>
             <span aria-hidden="true">◆</span>
-            Local-first workspace
+            {demoMode ? "Demo environment · safely simulated" : "Local-first workspace"}
           </div>
         </header>
 

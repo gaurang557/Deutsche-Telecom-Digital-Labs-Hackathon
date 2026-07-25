@@ -391,6 +391,17 @@ textarea:focus-visible {
   font-size: 8px;
 }
 
+.privacy-pill--demo {
+  border-color: rgba(226, 0, 116, 0.2);
+  color: #9a285e;
+  background: rgba(226, 0, 116, 0.06);
+  font-weight: 700;
+}
+
+.privacy-pill--demo span {
+  color: var(--accent);
+}
+
 .conversation {
   width: min(100%, 820px);
   flex: 1;

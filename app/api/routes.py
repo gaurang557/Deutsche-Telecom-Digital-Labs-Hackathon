@@ -6,10 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.voice_routes import router as voice_router
 from app.config import get_settings
+from app.execution.demo import DemoDesktopExecutor
 from app.execution.executor import DesktopExecutor
 from app.planning.exceptions import (
     InvalidPlannerResponseError,
     PlannerUnavailableError,
+)
+from app.planning.hosted import (
+    BedrockPlanner,
+    DemoFallbackPlanner,
+    ResilientHostedPlanner,
 )
 from app.planning.planner import OllamaPlanner, Planner
 from app.planning.repository import PlanRepository
@@ -37,7 +43,13 @@ async def health_check() -> HealthResponse:
 
 @lru_cache
 def get_planner() -> Planner:
-    return OllamaPlanner(get_settings())
+    settings = get_settings()
+    if settings.demo_mode or settings.planner_provider == "bedrock":
+        return ResilientHostedPlanner(
+            BedrockPlanner(settings),
+            DemoFallbackPlanner(),
+        )
+    return OllamaPlanner(settings)
 
 
 @lru_cache
@@ -47,6 +59,9 @@ def get_plan_repository() -> PlanRepository:
 
 @lru_cache
 def get_desktop_executor() -> DesktopExecutor:
+    settings = get_settings()
+    if settings.demo_mode:
+        return DemoDesktopExecutor(settings)
     return DesktopExecutor()
 
 

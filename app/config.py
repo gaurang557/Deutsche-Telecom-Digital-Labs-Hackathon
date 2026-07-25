@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     ollama_timeout_seconds: float = 60.0
+    demo_mode: bool = False
+    planner_provider: str = "ollama"
+    bedrock_region: str = "us-east-1"
+    bedrock_model_id: str = "amazon.nova-micro-v1:0"
+    demo_sandbox_dir: str = "/tmp/voice-desk-demo"
 
     # Speech-to-text (faster-whisper). Used from the STT chunk onward.
     whisper_model: str = "base.en"

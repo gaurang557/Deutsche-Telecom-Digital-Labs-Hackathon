@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pyautogui>=0.9.54,<1.0",
     "send2trash>=1.8,<2.0",
+    "boto3>=1.35,<2.0",
 ]
 
 [project.optional-dependencies]

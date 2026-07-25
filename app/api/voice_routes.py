@@ -4,13 +4,11 @@ from datetime import UTC, datetime
 from typing import Annotated
 from uuid import uuid4
 
-from av.error import FFmpegError
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from app.config import get_settings
 from app.schemas import TaskRequest
 from app.voice.schemas import VoiceHealthResponse
-from app.voice.stt import is_model_loaded, transcribe_audio
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 
@@ -19,10 +17,20 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 async def voice_health() -> VoiceHealthResponse:
     """Report the voice subsystem's readiness, including whether STT is warmed up."""
     settings = get_settings()
+    if settings.demo_mode:
+        return VoiceHealthResponse(
+            status="ok",
+            model="Browser speech",
+            model_loaded=True,
+            environment="demo",
+        )
+    from app.voice.stt import is_model_loaded
+
     return VoiceHealthResponse(
         status="ok",
         model=settings.whisper_model,
         model_loaded=is_model_loaded(),
+        environment="local",
     )
 
 
@@ -33,6 +41,18 @@ async def transcribe(file: Annotated[UploadFile, File()]) -> TaskRequest:
     A fresh ``request_id`` is minted here, at the microphone boundary, and threads
     the entire downstream task; ``source`` is always ``speech`` for mic input.
     """
+    if get_settings().demo_mode:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Use live browser speech recognition in the public demo, "
+                "or type your request."
+            ),
+        )
+    from av.error import FFmpegError
+
+    from app.voice.stt import transcribe_audio
+
     audio = await file.read()
     if not audio:
         raise HTTPException(status_code=400, detail="Empty audio upload.")

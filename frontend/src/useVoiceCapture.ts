@@ -15,7 +15,7 @@ export type CaptureStatus =
  * to the backend, and exposes the resulting transcript. State flows
  * idle -> requesting -> recording -> transcribing -> idle (or error).
  */
-export function useVoiceCapture() {
+export function useVoiceCapture(demoMode = false) {
   const [status, setStatus] = useState<CaptureStatus>("idle");
   const [result, setResult] = useState<TaskRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +25,7 @@ export function useVoiceCapture() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const liveFinalRef = useRef("");
+  const liveLatestRef = useRef("");
   const Recognition =
     window.SpeechRecognition ?? window.webkitSpeechRecognition;
   const liveSupported = Boolean(Recognition);
@@ -35,6 +36,7 @@ export function useVoiceCapture() {
     setResult(null);
     setLiveTranscript("");
     liveFinalRef.current = "";
+    liveLatestRef.current = "";
     setStatus("requesting");
 
     try {
@@ -57,9 +59,9 @@ export function useVoiceCapture() {
               interim += phrase;
             }
           }
-          setLiveTranscript(
-            `${liveFinalRef.current} ${interim}`.trim(),
-          );
+          const latest = `${liveFinalRef.current} ${interim}`.trim();
+          liveLatestRef.current = latest;
+          setLiveTranscript(latest);
         };
         recognition.onerror = () => {
           recognitionRef.current = null;
@@ -89,6 +91,20 @@ export function useVoiceCapture() {
         }
         setStatus("transcribing");
         try {
+          const browserTranscript = liveLatestRef.current.trim();
+          if (demoMode && browserTranscript) {
+            const transcript: TaskRequest = {
+              request_id: crypto.randomUUID(),
+              text: browserTranscript,
+              source: "speech",
+              confidence: null,
+              received_at: new Date().toISOString(),
+            };
+            setLiveTranscript(transcript.text);
+            setResult(transcript);
+            setStatus("idle");
+            return;
+          }
           const transcript = await transcribeAudio(blob);
           setLiveTranscript(transcript.text);
           setResult(transcript);
@@ -106,7 +122,7 @@ export function useVoiceCapture() {
       setError(String(err));
       setStatus("error");
     }
-  }, [status]);
+  }, [Recognition, demoMode, status]);
 
   const stop = useCallback(() => {
     const recorder = recorderRef.current;
