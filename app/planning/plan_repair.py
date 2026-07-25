@@ -33,6 +33,7 @@ from typing import NamedTuple
 from pydantic import ValidationError
 
 from app.planning.capabilities import (
+    find_explicit_local_root_mismatch,
     find_extension_family_mismatch,
     find_fabricated_user_profile_path,
     find_invalid_reference_group,
@@ -125,6 +126,9 @@ def find_recoverable_problems(draft: DraftPlan, request_text: str) -> list[str]:
             if isinstance(value := action.parameters.get(key), str)
         )
         for candidate in candidates:
+            root_mismatch = find_explicit_local_root_mismatch(request_text, candidate)
+            if root_mismatch is not None:
+                problems.append(f"{action.step_key}: {root_mismatch}")
             fabricated = find_fabricated_user_profile_path(candidate)
             if fabricated is not None:
                 problems.append(

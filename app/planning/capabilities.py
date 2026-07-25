@@ -22,6 +22,7 @@ so "create a new spreadsheet" is a supported request.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -103,6 +104,19 @@ _TEXT_ONLY_ACTIONS = frozenset(
 _PATH_PARAMETERS = tuple(sorted(PATH_LIKE_PARAMETERS))
 
 _USER_PROFILE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]+Users[\\/]+([^\\/]+)", re.IGNORECASE)
+_KNOWN_LOCAL_ROOTS = {
+    "desktop": "Desktop",
+    "documents": "Documents",
+    "downloads": "Downloads",
+}
+_LOCAL_ROOT_MENTION_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(_KNOWN_LOCAL_ROOTS)})\b",
+    re.IGNORECASE,
+)
+_URL_PATTERN = re.compile(
+    r"\b(?![A-Za-z]:[\\/])[A-Za-z][A-Za-z0-9+.-]*://\S+",
+    re.IGNORECASE,
+)
 
 
 def detect_unsupported_request(text: str) -> str | None:
@@ -166,6 +180,88 @@ def _home() -> Path | None:
         return Path.home()
     except (OSError, RuntimeError):
         return None
+
+
+def _explicit_request_root(text: str) -> str | None:
+    """The one known local root explicitly named by the user, if unambiguous."""
+    named = {
+        _KNOWN_LOCAL_ROOTS[match.group(0).casefold()]
+        for match in _LOCAL_ROOT_MENTION_PATTERN.finditer(_URL_PATTERN.sub("", text))
+    }
+    if len(named) != 1:
+        return None
+    return next(iter(named))
+
+
+def _known_local_path_parts(value: Any) -> tuple[str, tuple[str, ...]] | None:
+    """Return a local path's known root and every segment beneath that root."""
+    if not isinstance(value, str):
+        return None
+    target = value.strip()
+    if not target or _URL_PATTERN.match(target):
+        return None
+
+    try:
+        expanded = Path(target).expanduser()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not expanded.is_absolute():
+        parts = [part for part in re.split(r"[\\/]+", target) if part]
+        if not parts:
+            return None
+        root_name = _KNOWN_LOCAL_ROOTS.get(parts[0].casefold())
+        if root_name is None:
+            return None
+        return root_name, tuple(parts[1:])
+
+    home = _home()
+    if home is None:
+        return None
+    try:
+        candidate = Path(os.path.normcase(str(expanded.resolve(strict=False))))
+        for root_name in _KNOWN_LOCAL_ROOTS.values():
+            root = Path(
+                os.path.normcase(str((home / root_name).resolve(strict=False)))
+            )
+            if candidate.is_relative_to(root):
+                return root_name, candidate.relative_to(root).parts
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def find_explicit_local_root_mismatch(request_text: str, value: Any) -> str | None:
+    """Reject a path targeting or nesting a root other than the one explicitly named.
+
+    This is intentionally detection-only: it cannot rewrite the path, add an
+    action, or decide authority. Ambiguous requests naming multiple roots and
+    targets that are URLs or not recognizable local paths are left untouched.
+    """
+    requested_root = _explicit_request_root(request_text)
+    if requested_root is None:
+        return None
+    local_path = _known_local_path_parts(value)
+    if local_path is None:
+        return None
+    proposed_root, relative_parts = local_path
+    if proposed_root != requested_root:
+        return (
+            f"the request explicitly names {requested_root}, but this action path "
+            f"targets {proposed_root}: {value!r}. Replan with {requested_root} and "
+            "preserve every folder segment named by the user."
+        )
+
+    for part in relative_parts:
+        nested_root = _KNOWN_LOCAL_ROOTS.get(part.casefold())
+        if nested_root is None or nested_root == proposed_root:
+            continue
+        return (
+            f"the path {value!r} nests the {nested_root} root under "
+            f"{proposed_root}. {nested_root} is another root alias, not the folder "
+            "the user named; replan under "
+            f"{requested_root} and preserve the user-named folder path exactly."
+        )
+    return None
 
 
 def find_fabricated_user_profile_path(value: Any) -> str | None:
