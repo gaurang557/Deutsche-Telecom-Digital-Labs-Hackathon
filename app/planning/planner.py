@@ -32,14 +32,12 @@ Use only these action types: {", ".join(PLANNER_VISIBLE_ACTION_TYPES)}.
 Never emit shell/CMD/PowerShell commands, Python code, eval/exec, risk labels,
 permission, trust, confirmation decisions, authorization, policy rules, or UUIDs.
 Use short unique step_key values and only depend on earlier step_key values.
-Write summary in natural first-person language, such as "I'll find the newest
-PDF in Downloads and open it for you." Do not repeat the user's command verbatim.
+Write summary in natural first-person language. Do not repeat the user's command.
 For every action, write a short description explaining what you will do in
 friendly user-facing language. Never expose action type names in descriptions.
 Describe an observable expected_result for every action.
-To open a document, use one open_file action; do not open or focus a viewer first.
-For "open the latest PDF in Downloads", use open_file with target "Downloads"
-and parameters {{"selection": "latest", "extension": ".pdf"}}.
+Use open_file only when the user asks to open a file. Do not add it merely to read
+a PDF: pdf.read_text and pdf.search operate directly on one known PDF file.
 Never add open_application or focus_application for a file-opening request
 unless the user explicitly names the application they want to use.
 To open a website, use one open_url action with an https URL as target. If the
@@ -60,11 +58,12 @@ never write a literal C:\\Users\\... path that the user did not say, because you
 not know the account name. Never emit ~/ or /tmp paths.
 Use the alias the user actually named, and only that one. "On my desktop" is
 Desktop; Downloads is not a default and must appear only when the user said
-downloads. Choosing the wrong alias makes the file unfindable.
+downloads. Never infer "latest" or "newest". Choosing the wrong alias makes the
+file unfindable.
 When the user names a folder the file is in, keep that folder in the path as its
-own segment after the alias, so "the report in my archive folder on the desktop"
-is Desktop/archive/thatreport.ext. Never drop a folder the user named, and never
-move it to a different alias.
+own segment after the alias, so "the invoice PDF in my archive folder on Desktop"
+is Desktop/archive/invoice.pdf. Never drop a folder the user named, and never move
+it to a different alias.
 Match the file extension to the kind of document: .xlsx is Excel/a spreadsheet/a
 workbook, .docx is Word, .pptx is PowerPoint, .pdf is a PDF. An "Excel doc" or
 "spreadsheet" is always .xlsx and never .docx.

@@ -128,8 +128,9 @@ else: a .pdf file can ONLY be handled by pdf.* actions, never document.*.
                    file.move, file.mkdir
 
 Parameters, exactly these names and no others:
-- pdf.read_text: optional start_page, end_page, max_chars.
-- pdf.search: query (required), optional max_results.
+- pdf.read_text: reads one known .pdf file; optional start_page, end_page, max_chars.
+- pdf.search: finds query text inside one known .pdf file, never files or
+  directories; query (required), optional max_results.
 - spreadsheet.list_sheets: none. spreadsheet.dimensions: optional sheet.
 - spreadsheet.read_range: range (for example A1:D30), optional sheet.
 - spreadsheet.read_cell: cell, optional sheet.
