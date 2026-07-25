@@ -40,19 +40,25 @@ function friendlyExecutionMessage(result: PlanExecutionResponse): string {
   if (result.status === "cancelled") {
     return "The task was cancelled. Nothing else will be changed.";
   }
-  return "I couldn't finish the task. The details below should help us fix it.";
+  return "No further actions were run. Review the completed steps and failure below.";
 }
 
 function readableStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function ErrorNotice({ details }: { details?: string | null }) {
+function ErrorNotice({
+  title,
+  details,
+}: {
+  title: string;
+  details?: string | null;
+}) {
   return (
     <div className="error-state" role="alert">
       <span className="error-state__icon" aria-hidden="true">!</span>
       <div>
-        <strong>Sorry, something went wrong</strong>
+        <strong>{title}</strong>
         {details && <p>{details}</p>}
       </div>
     </div>
@@ -520,7 +526,10 @@ export default function App() {
             <article className="message message--assistant">
               <div className="assistant-avatar">V</div>
               <div className="message__content">
-                <ErrorNotice details={planningError} />
+                <ErrorNotice
+                  title="No safe plan could be made"
+                  details={`Nothing was executed. ${planningError}`}
+                />
               </div>
             </article>
           )}
@@ -653,7 +662,10 @@ export default function App() {
             <article className="message message--assistant">
               <div className="assistant-avatar">V</div>
               <div className="message__content">
-                <ErrorNotice details={executionError} />
+                <ErrorNotice
+                  title="Execution failed"
+                  details={`The application did not return an execution result. ${executionError}`}
+                />
               </div>
             </article>
           )}
@@ -664,7 +676,14 @@ export default function App() {
               <div className="message__content">
                 {executionResult.status === "failed" ||
                 executionResult.status === "blocked" ? (
-                  <ErrorNotice details={friendlyExecutionMessage(executionResult)} />
+                  <ErrorNotice
+                    title={
+                      executionResult.status === "blocked"
+                        ? "Action blocked"
+                        : "Execution failed"
+                    }
+                    details={friendlyExecutionMessage(executionResult)}
+                  />
                 ) : (
                   <p>{friendlyExecutionMessage(executionResult)}</p>
                 )}
