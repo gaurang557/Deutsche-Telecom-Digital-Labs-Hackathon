@@ -113,6 +113,12 @@ _LOCAL_ROOT_MENTION_PATTERN = re.compile(
     rf"\b(?:{'|'.join(_KNOWN_LOCAL_ROOTS)})\b",
     re.IGNORECASE,
 )
+_EXPLICIT_NAMED_FOLDER_PATTERN = re.compile(
+    rf"\bin\s+(?:the\s+)?(?P<folder>[\w&+'’ -]{{1,80}}?)\s+"
+    rf"(?:folder|directory)\s+(?:on|under|in)\s+(?:my\s+|the\s+)?"
+    rf"(?P<root>{'|'.join(_KNOWN_LOCAL_ROOTS)})\b",
+    re.IGNORECASE,
+)
 _URL_PATTERN = re.compile(
     r"\b(?![A-Za-z]:[\\/])[A-Za-z][A-Za-z0-9+.-]*://\S+",
     re.IGNORECASE,
@@ -387,6 +393,31 @@ def _explicit_request_root(text: str) -> str | None:
     if len(named) != 1:
         return None
     return next(iter(named))
+
+
+def find_explicit_local_folder_path(request_text: str) -> str | None:
+    """Return one bounded ``Root/named folder`` path stated by the user."""
+    text = _URL_PATTERN.sub("", request_text)
+    requested_root = _explicit_request_root(text)
+    if requested_root is None:
+        return None
+    matches = list(_EXPLICIT_NAMED_FOLDER_PATTERN.finditer(text))
+    if len(matches) != 1:
+        return None
+
+    match = matches[0]
+    matched_root = _KNOWN_LOCAL_ROOTS[match.group("root").casefold()]
+    folder = " ".join(match.group("folder").split())
+    words = folder.casefold().split()
+    if (
+        matched_root != requested_root
+        or not 1 <= len(words) <= 8
+        or folder.casefold() in {"current", "same"}
+        or _SPOKEN_BASENAME_PATTERN.fullmatch(folder) is None
+        or any(part in {".", ".."} for part in words)
+    ):
+        return None
+    return f"{requested_root}/{folder}"
 
 
 def _known_local_path_parts(value: Any) -> tuple[str, tuple[str, ...]] | None:

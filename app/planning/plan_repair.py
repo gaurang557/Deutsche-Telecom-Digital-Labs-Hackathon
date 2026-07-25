@@ -39,6 +39,7 @@ from pydantic import ValidationError
 
 from app.planning.capabilities import (
     detect_spreadsheet_cell_write_intent,
+    find_explicit_local_folder_path,
     find_explicit_local_root_mismatch,
     find_explicit_spreadsheet_cell,
     find_extension_family_mismatch,
@@ -195,10 +196,15 @@ def _same_folder_workbook_target(
     filename = find_spoken_filename(request_text, "spreadsheet")
     if filename is None:
         return None
-    separator = max(source_target.rfind("/"), source_target.rfind("\\"))
-    if separator < 0:
-        return None
-    target = f"{source_target[: separator + 1]}{filename}"
+
+    explicit_parent = find_explicit_local_folder_path(request_text)
+    if explicit_parent is not None:
+        target = f"{explicit_parent}/{filename}"
+    else:
+        separator = max(source_target.rfind("/"), source_target.rfind("\\"))
+        if separator < 0:
+            return None
+        target = f"{source_target[: separator + 1]}{filename}"
     if len(target) > 500:
         return None
     return target
