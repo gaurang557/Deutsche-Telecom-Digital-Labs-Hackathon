@@ -94,6 +94,19 @@ def describe_action(
     parameters: dict,
 ) -> str:
     if isinstance(action_type, StructuredActionType):
+        if action_type is StructuredActionType.SPREADSHEET_WRITE_CELL:
+            cell = str(parameters.get("cell", "the requested cell"))
+            sheet = parameters.get("sheet")
+            location = f"{sheet}!{cell}" if sheet else f"cell {cell}"
+            if bool(parameters.get("overwrite")):
+                return (
+                    f"Overwrite {location} in {target}; its existing value may be "
+                    "replaced."
+                )
+            return (
+                f"Write to {location} in {target}; if it already contains data, "
+                "stop without overwriting it."
+            )
         friendly = action_type.value.replace(".", " ").replace("_", " ")
         return f"{friendly.capitalize()} for {target}."
     if action_type is ActionType.OPEN_URL:
@@ -304,8 +317,12 @@ def build_action_plan(request: TaskRequest, draft: DraftPlan) -> ActionPlan:
                 type=action.type,
                 target=target,
                 resolved_from=resolved_from,
-                description=action.description.strip()
-                or describe_action(action.type, target, parameters),
+                description=(
+                    describe_action(action.type, target, parameters)
+                    if action.type is StructuredActionType.SPREADSHEET_WRITE_CELL
+                    else action.description.strip()
+                    or describe_action(action.type, target, parameters)
+                ),
                 parameters=parameters,
                 depends_on=[
                     key_to_id[key]

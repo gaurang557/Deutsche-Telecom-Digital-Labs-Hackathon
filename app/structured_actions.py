@@ -333,6 +333,8 @@ def structured_confirmation_required(
     action_type: str,
     parameters: dict[str, Any],
 ) -> bool:
+    if action_type == StructuredActionType.SPREADSHEET_WRITE_CELL.value:
+        return True
     if bool(parameters.get("overwrite")):
         return True
     if action_type in {

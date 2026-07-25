@@ -578,7 +578,9 @@ export default function App() {
                           <p>{action.description}</p>
                           {action.requires_confirmation && (
                             <span className="risk-note">
-                              This step changes something outside the app
+                              {action.type === "spreadsheet.write_cell"
+                                ? "Confirmation required: this will modify a spreadsheet file."
+                                : "This step changes something outside the app"}
                             </span>
                           )}
                         </div>
