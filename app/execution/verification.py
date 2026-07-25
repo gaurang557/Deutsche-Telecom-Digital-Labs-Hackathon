@@ -54,6 +54,17 @@ def verify_action(
             passed=passed,
             message="File content was read" if passed else "No file content was returned",
         )
+    if action.type is ActionType.LIST_DIRECTORY:
+        passed = isinstance(evidence.get("entries"), list)
+        return VerificationResult(
+            passed=passed,
+            message=(
+                f"Found {evidence.get('count', 0)} items in the folder"
+                if passed
+                else "The folder listing was not returned"
+            ),
+            evidence={"path": evidence.get("path")},
+        )
     if action.type in {ActionType.OPEN_APPLICATION, ActionType.FOCUS_APPLICATION}:
         running = desktop.is_application_running(
             str(evidence.get("application", action.target))

@@ -219,6 +219,55 @@ def test_copies_text_content_to_new_file(tmp_path: Path) -> None:
     assert destination.read_text() == "Voice desk content"
 
 
+def test_copy_content_resolves_downloads_and_relative_destination(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    source = downloads / "Lin.pem"
+    source.write_text("certificate")
+    monkeypatch.setattr(
+        "app.paths.discover_system_folders",
+        lambda home=None: {"downloads": downloads},
+    )
+    action = make_action(
+        action_type=ActionType.COPY_FILE_CONTENT,
+        target="Downloads/Lin.pem",
+        parameters={"destination": "Lin_copy.pem", "overwrite": False},
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert result.evidence["source"] == str(source)
+    assert result.evidence["destination"] == str(downloads / "Lin_copy.pem")
+    assert (downloads / "Lin_copy.pem").read_text() == "certificate"
+
+
+def test_lists_directory_without_opening_it(tmp_path: Path) -> None:
+    (tmp_path / "folder").mkdir()
+    (tmp_path / "beta.txt").write_text("beta")
+    (tmp_path / "Alpha.txt").write_text("alpha")
+    (tmp_path / ".hidden").write_text("hidden")
+    action = make_action(
+        action_type=ActionType.LIST_DIRECTORY,
+        target=str(tmp_path),
+    )
+
+    result = DesktopExecutor()._execute_action(action)
+
+    assert result.status == "succeeded"
+    assert result.evidence["count"] == 3
+    assert result.evidence["entries"] == [
+        {"name": "folder", "type": "folder"},
+        {"name": "Alpha.txt", "type": "file"},
+        {"name": "beta.txt", "type": "file"},
+    ]
+    assert result.verification is not None
+    assert result.verification.passed is True
+
+
 def test_summarizes_active_gmail_message(monkeypatch) -> None:
     monkeypatch.setattr("app.execution.executor.platform.system", lambda: "Darwin")
     monkeypatch.setattr(

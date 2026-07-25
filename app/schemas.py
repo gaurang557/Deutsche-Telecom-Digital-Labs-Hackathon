@@ -34,6 +34,7 @@ class ActionType(StrEnum):
     TYPE_TEXT = "type_text"
     PRESS_KEY = "press_key"
     READ_FILE = "read_file"
+    LIST_DIRECTORY = "list_directory"
     COPY_FILE_CONTENT = "copy_file_content"
     CREATE_FILE = "create_file"
     MOVE_FILE = "move_file"

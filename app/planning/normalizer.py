@@ -40,6 +40,7 @@ _ACTION_VERBS = {
     ActionType.TYPE_TEXT: "Enter text in",
     ActionType.PRESS_KEY: "Use a keyboard shortcut in",
     ActionType.READ_FILE: "Read",
+    ActionType.LIST_DIRECTORY: "List the files in",
     ActionType.COPY_FILE_CONTENT: "Copy the contents of",
     ActionType.CREATE_FILE: "Create",
     ActionType.MOVE_FILE: "Move",
@@ -103,6 +104,43 @@ def build_action_plan(request: TaskRequest, draft: DraftPlan) -> ActionPlan:
             and action.target.casefold() in url_browsers
         )
     ]
+    listing_phrases = (
+        "list files",
+        "list the files",
+        "show files",
+        "show the files",
+        "what files",
+        "files present",
+        "files are present",
+    )
+    if any(phrase in request_text for phrase in listing_phrases):
+        directory_action = next(
+            (
+                action
+                for action in actions_to_build
+                if action.type
+                in {
+                    ActionType.LIST_DIRECTORY,
+                    ActionType.OPEN_FILE,
+                    ActionType.READ_FILE,
+                }
+            ),
+            None,
+        )
+        if directory_action is not None:
+            actions_to_build = [
+                directory_action.model_copy(
+                    update={
+                        "type": ActionType.LIST_DIRECTORY,
+                        "description": (
+                            f"List the files and folders in "
+                            f"{directory_action.target}."
+                        ),
+                        "parameters": {},
+                        "depends_on": [],
+                    }
+                )
+            ]
     retained_keys = {action.step_key for action in actions_to_build}
     key_to_id: dict[str, UUID] = {
         action.step_key: uuid4() for action in actions_to_build

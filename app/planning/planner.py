@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 from pydantic import ValidationError
 
 from app.config import Settings
+from app.paths import planner_folder_context
 from app.planning.exceptions import (
     InvalidPlannerResponseError,
     PlannerUnavailableError,
@@ -38,6 +39,8 @@ For "close Calculator", use close_application with target "Calculator". For
 For "show the contents of notes.txt", use read_file. For "copy the contents of
 source.txt to destination.txt", use copy_file_content with source as target and
 parameters {{"destination": "destination.txt", "overwrite": false}}.
+For "list the files in Downloads", use exactly one list_directory action with
+the Downloads folder as target. Never use open_file or read_file to list a folder.
 For "summarize the email open in Gmail", use one summarize_gmail_email action
 with target "Google Chrome". This reads only the currently visible Gmail page.
 Use move_file only when the user explicitly asks to move or relocate a file.
@@ -61,6 +64,7 @@ class OllamaPlanner:
     def _create_draft_sync(self, request: TaskRequest) -> DraftPlan:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": planner_folder_context()},
             {"role": "user", "content": request.text},
         ]
         content = self._chat(messages)

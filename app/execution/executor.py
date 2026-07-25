@@ -12,6 +12,7 @@ from uuid import UUID
 from app.execution.gmail import capture_open_gmail_email, summarize_email
 from app.execution.semantic import NativeSemanticDesktop, SemanticDesktop
 from app.execution.verification import verify_action
+from app.paths import resolve_user_path
 from app.schemas import (
     Action,
     ActionPlan,
@@ -166,6 +167,7 @@ class DesktopExecutor:
             ActionType.TYPE_TEXT: self._type_text,
             ActionType.PRESS_KEY: self._press_key,
             ActionType.READ_FILE: self._read_file,
+            ActionType.LIST_DIRECTORY: self._list_directory,
             ActionType.COPY_FILE_CONTENT: self._copy_file_content,
             ActionType.CREATE_FILE: self._create_file,
             ActionType.MOVE_FILE: self._move_file,
@@ -264,15 +266,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _resolve_file(action: Action) -> Path:
-        target = action.target.strip()
-        known_folders = {
-            "desktop": Path.home() / "Desktop",
-            "documents": Path.home() / "Documents",
-            "downloads": Path.home() / "Downloads",
-        }
-        path = known_folders.get(target.casefold(), Path(target).expanduser())
-        if not path.is_absolute():
-            path = path.resolve()
+        path = resolve_user_path(action.target)
 
         if path.is_file():
             return path
@@ -424,7 +418,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _read_file(action: Action) -> dict[str, Any]:
-        path = Path(action.target).expanduser()
+        path = resolve_user_path(action.target)
         content = path.read_text(encoding="utf-8")
         return {
             "path": str(path),
@@ -434,12 +428,48 @@ class DesktopExecutor:
         }
 
     @staticmethod
+    def _list_directory(action: Action) -> dict[str, Any]:
+        path = resolve_user_path(action.target)
+        if not path.is_dir():
+            raise ValueError(f"Directory does not exist: {path}")
+
+        include_hidden = action.parameters.get("include_hidden", False)
+        if not isinstance(include_hidden, bool):
+            raise ValueError("list_directory include_hidden must be true or false")
+        entries = sorted(
+            (
+                {
+                    "name": child.name,
+                    "type": "folder" if child.is_dir() else "file",
+                }
+                for child in path.iterdir()
+                if include_hidden or not child.name.startswith(".")
+            ),
+            key=lambda item: (item["type"] != "folder", item["name"].casefold()),
+        )
+        visible_entries = entries[:500]
+        lines = [
+            f"{'Folder' if entry['type'] == 'folder' else 'File'}: {entry['name']}"
+            for entry in visible_entries
+        ]
+        return {
+            "path": str(path),
+            "entries": visible_entries,
+            "count": len(entries),
+            "truncated": len(entries) > len(visible_entries),
+            "content": "\n".join(lines) or "This folder is empty.",
+        }
+
+    @staticmethod
     def _copy_file_content(action: Action) -> dict[str, Any]:
-        source = Path(action.target).expanduser()
+        source = resolve_user_path(action.target)
         destination_value = action.parameters.get("destination")
         if not isinstance(destination_value, str):
             raise ValueError("copy_file_content requires a destination parameter")
-        destination = Path(destination_value).expanduser()
+        destination = resolve_user_path(
+            destination_value,
+            relative_to=source.parent,
+        )
         overwrite = action.parameters.get("overwrite", False)
         if not isinstance(overwrite, bool):
             raise ValueError("copy_file_content overwrite must be true or false")
@@ -458,7 +488,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _create_file(action: Action) -> dict[str, Any]:
-        path = Path(action.target).expanduser()
+        path = resolve_user_path(action.target)
         if path.exists():
             raise RuntimeError("Refusing to replace an existing file with create_file")
         content = action.parameters.get("content", "")
@@ -470,11 +500,14 @@ class DesktopExecutor:
 
     @staticmethod
     def _move_file(action: Action) -> dict[str, Any]:
-        source = Path(action.target).expanduser()
+        source = resolve_user_path(action.target)
         destination_value = action.parameters.get("destination")
         if not isinstance(destination_value, str):
             raise ValueError("move_file requires a destination parameter")
-        destination = Path(destination_value).expanduser()
+        destination = resolve_user_path(
+            destination_value,
+            relative_to=source.parent,
+        )
         if destination.exists():
             raise RuntimeError("Refusing to overwrite the move destination")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -483,7 +516,7 @@ class DesktopExecutor:
 
     @staticmethod
     def _overwrite_file(action: Action) -> dict[str, Any]:
-        path = Path(action.target).expanduser()
+        path = resolve_user_path(action.target)
         content = action.parameters.get("content")
         if not isinstance(content, str):
             raise ValueError("overwrite_file requires text content")
@@ -494,7 +527,7 @@ class DesktopExecutor:
     def _delete_file(action: Action) -> dict[str, Any]:
         from send2trash import send2trash
 
-        path = Path(action.target).expanduser()
+        path = resolve_user_path(action.target)
         if not path.is_file():
             raise ValueError("delete_file target must be an existing file")
         send2trash(str(path))

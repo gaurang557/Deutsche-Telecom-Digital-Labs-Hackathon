@@ -187,6 +187,33 @@ def test_browser_launch_step_is_removed_from_url_plan() -> None:
     assert plan.actions[0].depends_on == []
 
 
+def test_directory_listing_replaces_incorrect_open_and_read_steps() -> None:
+    request = TaskRequest(text="List the files present in the Downloads folder")
+    draft = DraftPlan(
+        summary="I'll list the files in Downloads.",
+        actions=[
+            DraftAction(
+                step_key="open",
+                type="open_file",
+                target="Downloads",
+            ),
+            DraftAction(
+                step_key="read",
+                type="read_file",
+                target="Downloads",
+                depends_on=["open"],
+            ),
+        ],
+    )
+
+    plan = build_action_plan(request, draft)
+
+    assert len(plan.actions) == 1
+    assert plan.actions[0].type is ActionType.LIST_DIRECTORY
+    assert plan.actions[0].target == "Downloads"
+    assert plan.actions[0].depends_on == []
+
+
 def test_closing_applications_is_high_risk() -> None:
     assert classify_risk(ActionType.CLOSE_APPLICATION) == "high"
     assert classify_risk(ActionType.CLOSE_ALL_APPLICATIONS) == "high"

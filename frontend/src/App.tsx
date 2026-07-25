@@ -570,7 +570,11 @@ export default function App() {
                         )}
                         {evidenceText(action.evidence, "content") && (
                           <div className="evidence-panel">
-                            <span>File content</span>
+                            <span>
+                              {Array.isArray(action.evidence.entries)
+                                ? "Folder contents"
+                                : "File content"}
+                            </span>
                             <pre>{evidenceText(action.evidence, "content")}</pre>
                           </div>
                         )}
