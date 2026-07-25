@@ -303,7 +303,7 @@ def find_extension_family_mismatch(
     target: str,
     parameters: dict[str, Any],
 ) -> str | None:
-    """Return a message when a path's extension contradicts the action family."""
+    """Return a message when a path's extension is missing or contradicts its family."""
     if not isinstance(action_type, StructuredActionType):
         return None
 
@@ -332,7 +332,7 @@ def find_extension_family_mismatch(
     expected = ", ".join(sorted(allowed))
     for candidate in candidates:
         suffix = Path(candidate).suffix.casefold()
-        if suffix and suffix not in allowed:
+        if suffix not in allowed:
             return (
                 f"{action_type.value} needs a {expected} path but the planner "
                 f"proposed {candidate!r}"
